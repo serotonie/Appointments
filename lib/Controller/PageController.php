@@ -627,7 +627,7 @@ class PageController extends Controller
 
         $pps = $this->utils->getUserSettings(
             BackendUtils::KEY_PSN, $userId);
-        $tr_params['appt_inline_style'] = $this->utils->getInlineStyle($userId, $pps,$this->c);
+        $tr_params['appt_inline_style'] = $this->utils->getInlineStyle($userId, $pps, $this->c);
         $tr_params['application'] = $this->l->t('Appointments');
 
         $tr->setParams($tr_params);
@@ -648,7 +648,7 @@ class PageController extends Controller
         $pps = $this->utils->getUserSettings(
             BackendUtils::KEY_PSN, $userId);
         $tr->setParams([
-            'appt_inline_style' => $this->utils->getInlineStyle($userId, $pps,$this->c),
+            'appt_inline_style' => $this->utils->getInlineStyle($userId, $pps, $this->c),
             'application' => $this->l->t('Appointments')
         ]);
 
@@ -1009,7 +1009,7 @@ class PageController extends Controller
 
         $pps = $this->utils->getUserSettings(
             BackendUtils::KEY_PSN, $uid);
-        $param['appt_inline_style'] = $this->utils->getInlineStyle($uid, $pps,$this->c);
+        $param['appt_inline_style'] = $this->utils->getInlineStyle($uid, $pps, $this->c);
 
         $tr->setParams($param);
         $tr->setStatus($rs);
@@ -1074,7 +1074,7 @@ class PageController extends Controller
             'appt_pps' => '',
             'appt_gdpr' => '',
             'appt_gdpr_no_chb' => false,
-            'appt_inline_style' => $this->utils->getInlineStyle($uid, $pps,$this->c),
+            'appt_inline_style' => $this->utils->getInlineStyle($uid, $pps, $this->c),
             'appt_hide_phone' => $pps[BackendUtils::PSN_HIDE_TEL],
             'more_html' => "<div id=tokenSwissPost style='display: none;'>" . $tokenSwissPost . "</div>",
             'application' => $this->l->t('Appointments'),
@@ -1147,7 +1147,7 @@ class PageController extends Controller
         if ($ts_mode === BackendUtils::CLS_TS_MODE_TEMPLATE) {
             $out = $this->bc->queryTemplate($cms, $t_start, $t_end, $uid, $pageId);
         } else {
-            $out = $this->bc->queryRange($calId, $t_start, $t_end, $ts_mode . $uid);
+            $out = $this->bc->queryRange($calId, $t_start, $t_end, $ts_mode . $uid, $pageId);
         }
 
         if (empty($out)) {
