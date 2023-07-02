@@ -8,6 +8,7 @@ namespace OCA\Appointments\Backend;
 use OC\Mail\EMailTemplate;
 use OCA\Appointments\AppInfo\Application;
 use OCA\Appointments\Email\EMailTemplateNC20;
+use OCA\Appointments\Linkify;
 use OCA\DAV\Events\CalendarObjectMovedToTrashEvent;
 use OCA\DAV\Events\CalendarObjectUpdatedEvent;
 use OCA\DAV\Events\SubscriptionDeletedEvent;
@@ -18,9 +19,11 @@ use OCP\EventDispatcher\IEventListener;
 use OCP\IConfig;
 use OCP\IDBConnection;
 use OCP\IURLGenerator;
+use OCP\IUserManager;
 use OCP\L10N\IFactory;
 use OCP\Mail\IEMailTemplate;
 use OCP\Mail\IMailer;
+use OCP\Mail\IMessage;
 use Psr\Log\LoggerInterface;
 use Sabre\VObject\Reader;
 
@@ -38,6 +41,8 @@ class DavListener implements IEventListener
     /** @type IConfig */
     private $config;
 
+    private $linkify;
+
     public function __construct(\OCP\IL10N      $l10N,
                                 LoggerInterface $logger,
                                 BackendUtils    $utils)
@@ -49,6 +54,8 @@ class DavListener implements IEventListener
 
         $this->mailer = \OC::$server->get(IMailer::class);
         $this->config = \OC::$server->get(IConfig::class);
+
+        $this->linkify = new Linkify();
     }
 
     function handle(Event $event): void
@@ -264,7 +271,12 @@ class DavListener implements IEventListener
                         }
                     }
                     if (!empty($remObj[BackendUtils::REMINDER_MORE_TEXT])) {
-                        $tmpl->addBodyText($remObj[BackendUtils::REMINDER_MORE_TEXT]);
+                        list($remHtml, $remPlainText) = $this->prepHtmlEmailText($remObj[BackendUtils::REMINDER_MORE_TEXT]);
+                        if ($remHtml === null) {
+                            $tmpl->addBodyText($remPlainText);
+                        } else {
+                            $tmpl->addBodyText($remHtml, $remPlainText);
+                        }
                     }
 
                     // everything is ready, send email...
@@ -272,18 +284,10 @@ class DavListener implements IEventListener
 
                     ///-------------------
 
-                    $def_email = \OCP\Util::getDefaultEmailAddress('appointments-noreply');
-
                     $msg = $mailer->createMessage();
 
-                    if ($config->getAppValue($this->appName,
-                            BackendUtils::KEY_USE_DEF_EMAIL,
-                            'yes') === 'no') {
-                        $msg->setFrom(array($org_email));
-                    } else {
-                        $msg->setFrom(array($def_email));
-                        $msg->setReplyTo(array($org_email));
-                    }
+                    $this->setFromAddress($msg, $userId, $org_email, $org_name);
+
                     $msg->setTo(array($to_email));
                     $msg->useTemplate($tmpl);
 
@@ -796,18 +800,11 @@ class DavListener implements IEventListener
 
         ///-------------------
 
-        $def_email = \OCP\Util::getDefaultEmailAddress('appointments-noreply');
 
         $msg = $mailer->createMessage();
 
-        if ($config->getAppValue($this->appName,
-                BackendUtils::KEY_USE_DEF_EMAIL,
-                'yes') === 'no') {
-            $msg->setFrom(array($org_email));
-        } else {
-            $msg->setFrom(array($def_email));
-            $msg->setReplyTo(array($org_email));
-        }
+        $this->setFromAddress($msg, $userId, $org_email, $org_name);
+
         $msg->setTo(array($to_email));
         $msg->useTemplate($tmpl);
 
@@ -948,7 +945,7 @@ class DavListener implements IEventListener
                 $ic = 0;
                 foreach ($oma as $info) {
                     if (strlen($info) > 2) {
-                        $tmpl->addBodyListItem($info);
+                        $tmpl->addBodyListItem($this->linkify->process($info), '', '', strip_tags($info));
                         $ic++;
                         if ($ic > 16) {
                             break;
@@ -963,7 +960,7 @@ class DavListener implements IEventListener
                 }
 
                 $msg = $mailer->createMessage();
-                $msg->setFrom(array($def_email));
+                $msg->setFrom(array(\OCP\Util::getDefaultEmailAddress('appointments-noreply')));
                 $msg->setTo(array($org_email));
                 $msg->useTemplate($tmpl);
 
@@ -1257,12 +1254,75 @@ class DavListener implements IEventListener
 
     private function addMoreEmailText(IEMailTemplate $template, string $text)
     {
-        $text_striped = strip_tags($text);
-        if ($text === $text_striped) {
-            // non html
-            $template->addBodyText($text);
+        list($html, $plainText) = $this->prepHtmlEmailText($text);
+        if ($html === null) {
+            $template->addBodyText($plainText);
         } else {
-            $template->addBodyText($text, $text);
+            $template->addBodyText($html, $plainText);
         }
     }
+
+    /**
+     * @param string $text html|text
+     * @return array [ html|null, plainText ]
+     */
+    private function prepHtmlEmailText($text)
+    {
+        $plainText = strip_tags($text);
+        if ($text === $plainText) {
+            // plain text
+            $linkified = $this->linkify->process($plainText);
+            if ($linkified === $plainText) {
+                // no links aor emails just plain text
+                return [null, $plainText];
+            } else {
+                // links were found and turned into html
+                return [$linkified, $plainText];
+            }
+        } else {
+            // html
+            return [str_replace('<?', '&lt;?', $text), $plainText];
+        }
+
+    }
+
+    /**
+     * @param IMessage $msg
+     * @param string $userId
+     * @param string $org_email
+     * @param string $org_name
+     * @return void
+     */
+    private function setFromAddress($msg, $userId, $org_email, $org_name)
+    {
+        if ($this->config->getAppValue($this->appName,
+                BackendUtils::KEY_USE_DEF_EMAIL,
+                'yes') === 'no') {
+            $email = $org_email;
+        } else {
+            $email = \OCP\Util::getDefaultEmailAddress('appointments-noreply');
+            $msg->setReplyTo(array($org_email));
+        }
+
+        $name = trim($org_name);
+        if (empty($name)) {
+            try {
+                /** @var IUserManager $userManager */
+                $userManager = \OC::$server->get(IUserManager::class);
+                $name = trim($userManager->getDisplayName($userId));
+            } catch (\Throwable $e) {
+                $this->logger->error("cannot determine user display name", [
+                    'app' => Application::APP_ID,
+                    'exception' => $e,
+                ]);
+                $name = "";
+            }
+        }
+        if (!empty($name)) {
+            $msg->setFrom([$email => $name]);
+        } else {
+            $msg->setFrom([$email]);
+        }
+    }
+
 }
