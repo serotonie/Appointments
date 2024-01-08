@@ -1,6 +1,7 @@
 OC.L10N.register(
     "appointments",
     {
+    "Confirm" : "Confirmar",
     "Cancel" : "Encaboxar",
     "Date/Time: %s" : "Data/HoraTime: %s",
     "Location: %s" : "Llugar: %s",
@@ -19,6 +20,7 @@ OC.L10N.register(
     "Error occurred. Check console …" : "Prodúxose un error. Revisa la consola…",
     "Main page" : "Páxina principal",
     "Add" : "Amestar",
+    "OK" : "Normal",
     "Advanced Settings" : "Configuración avanzada",
     "These settings affect ALL pages" : "Esta opción afeuta a TOLES páxines",
     "15 minutes" : "15 minutos",
@@ -38,6 +40,7 @@ OC.L10N.register(
     "12 Hours" : "12 hores",
     "Loading…" : "Cargando…",
     "Edit" : "Editar",
+    "Text" : "Testu",
     "URL" : "URL",
     "Error" : "Error",
     "One Week" : "Una selmana",
@@ -63,6 +66,7 @@ OC.L10N.register(
     "Location:" : "Llugar:",
     "Date & Time" : "Data ya hora",
     "Back" : "Atrás",
+    "Next" : "Siguiente",
     "Duration" : "Duración",
     "An error has occurred" : "Prodúxose un error",
     "Please try again later" : "Volvi tentalo dempués"
