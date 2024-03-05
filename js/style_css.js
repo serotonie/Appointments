@@ -1,1 +1,0 @@
-(()=>{"use strict";var s={p:"/js/"};s.p})();
