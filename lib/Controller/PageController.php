@@ -316,7 +316,7 @@ class PageController extends Controller
 
         // take action automatically if "Skip email verification step" is set
         $take_action = $a === '2';
-        $appt_action_url = '';
+        $appt_action_url_hash = '';
         // issue https://github.com/SergeyMosin/Appointments/issues/293
         if (!$take_action) {
             // we only take action if we have $dh param and $dh matches $pd adler32 hash
@@ -329,7 +329,7 @@ class PageController extends Controller
                     return new NotFoundResponse();
                 }
             } else {
-                $appt_action_url = $this->request->getRequestUri() . "&h=" . hash('adler32', $pd, false);
+                $appt_action_url_hash = hash('adler32', $pd, false);
             }
         }
 
@@ -431,7 +431,7 @@ class PageController extends Controller
                             $page_text = $this->l->t('Please confirm your appointment scheduled for %s.', [$date_time]);
                             // TRANSLATORS This is a button label
                             $tr_params['appt_action_url_text'] = $this->l->t("Confirm");
-                            $tr_params['appt_action_url'] = $appt_action_url;
+                            $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
                         }
                     }
                 }
@@ -524,7 +524,7 @@ class PageController extends Controller
                     $page_text = $this->l->t('Would you like to cancel appointment scheduled for %s ?', [$date_time]);
                     // TRANSLATORS This is a button label
                     $tr_params['appt_action_url_text'] = $this->l->t("Yes, Cancel");
-                    $tr_params['appt_action_url'] = $appt_action_url;
+                    $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
                 }
             }
         } elseif ($a === '3') {
@@ -585,7 +585,7 @@ class PageController extends Controller
                         $page_text = $this->l->t("Would you like to change your %s to %s?", [$lbl, $new_type]);
                         // TRANSLATORS This is a button label
                         $tr_params['appt_action_url_text'] = $this->l->t("Yes, Change");
-                        $tr_params['appt_action_url'] = $appt_action_url;
+                        $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
                     }
                 }
             }
@@ -778,7 +778,7 @@ class PageController extends Controller
         $fij = $this->utils->getUserSettings(BackendUtils::KEY_FORM_INPUTS_JSON, $userId)[BackendUtils::KEY_FORM_INPUTS_JSON];
 
         if (!empty($fij)) {
-            $f0 = $fij[0];
+            $f0 = $fij;
             if (is_array($f0) && array_key_exists(0, $f0) && is_array($f0[0])) {
                 foreach ($f0 as $index => $field) {
                     $fieldResult = $this->showFormCustomField($field, $post, $index);
