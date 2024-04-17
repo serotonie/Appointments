@@ -75,7 +75,7 @@ class CalendarsController extends Controller
         $cals = [];
 
         $dst_cal_id = "-1";
-        $main_cal_id = $this->utils->getMainCalId($this->userId, $pageId, $this->bc, $dst_cal_id);
+        $main_cal_id = $this->utils->getMainCalId($this->userId, $this->bc, $dst_cal_id);
 
         if ($main_cal_id !== "-1") {
             $cals[] = $main_cal_id;
@@ -106,18 +106,12 @@ class CalendarsController extends Controller
      * @noinspection PhpUnused
      */
     public function calgetweek() {
-
         $pageId = $this->request->getParam("p", "p0");
         if (empty($pageId)) $pageId = "p0";
 
-        $pgs = $this->utils->getUserSettings(
-            BackendUtils::KEY_PAGES, $this->userId);
+        $settings = $this->utils->getUserSettings();
 
-        $key = $pageId === 'p0' ? BackendUtils::KEY_CLS : BackendUtils::KEY_MPS . $pageId;
-        $cms = $this->utils->getUserSettings($key, $this->userId);
-
-        if ($cms[BackendUtils::CLS_TS_MODE] !== "0"
-            || !isset($pgs[$pageId])) {
+        if ($settings[BackendUtils::CLS_TS_MODE] !== BackendUtils::CLS_TS_MODE_SIMPLE) {
             $r = new SendDataResponse();
             $r->setStatus(400);
             return $r;
@@ -139,7 +133,7 @@ class CalendarsController extends Controller
         }
 
         $dcl_id = '-1';
-        $cal_id = $this->utils->getMainCalId($this->userId, $pageId, $this->bc, $dcl_id);
+        $cal_id = $this->utils->getMainCalId($this->userId, $this->bc, $dcl_id);
         if ($cal_id === "-1") {
             $r->setStatus(400);
             return $r;

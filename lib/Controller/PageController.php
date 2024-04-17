@@ -11,16 +11,18 @@ use OCA\Appointments\AppInfo\Application;
 use OCA\Appointments\Backend\BackendManager;
 use OCA\Appointments\Backend\BackendUtils;
 use OCA\Appointments\Backend\HintVar;
+use OCA\Appointments\Backend\IBackendConnector;
 use OCP\AppFramework\Http\ContentSecurityPolicy;
 use OCP\AppFramework\Http\NotFoundResponse;
 use OCP\AppFramework\Http\RedirectResponse;
+use OCP\AppFramework\Http\Response;
 use OCP\AppFramework\Http\Template\PublicTemplateResponse;
 use OCP\IConfig;
+use OCP\IGroupManager;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\AppFramework\Http\TemplateResponse;
 use OCP\AppFramework\Controller;
-use OCP\IURLGenerator;
 use OCP\IUserSession;
 use OCP\Mail\IMailer;
 use OCP\Util;
@@ -31,28 +33,26 @@ class PageController extends Controller
     const RND_SPS = 'abcdefghijklmnopqrstuvwxyz1234567890';
     const RND_SPU = '1234567890ABCDEF';
 
-    private $userId;
-    private $c;
-    private $mailer;
-    private $l;
-    /** @var \OCA\Appointments\Backend\IBackendConnector $bc */
-    private $bc;
-    private $utils;
-    private $logger;
-    private $userSession;
+    private string|null $userId;
+    private IConfig $c;
+    private IMailer $mailer;
+    private IL10N $l;
+    private IBackendConnector $bc;
+    private BackendUtils $utils;
+    private LoggerInterface $logger;
+    private IUserSession $userSession;
 
-    public function __construct($AppName,
-                                IRequest $request,
-        $UserId,
-                                IConfig $c,
-                                IMailer $mailer,
-                                IL10N $l,
-                                IUserSession $userSession,
-                                BackendManager $backendManager,
-                                BackendUtils $utils,
+    public function __construct(IRequest        $request,
+                                                $UserId,
+                                IConfig         $c,
+                                IMailer         $mailer,
+                                IL10N           $l,
+                                IUserSession    $userSession,
+                                BackendManager  $backendManager,
+                                BackendUtils    $utils,
                                 LoggerInterface $logger
     ) {
-        parent::__construct($AppName, $request);
+        parent::__construct(Application::APP_ID, $request);
         $this->userId = $UserId;
         $this->c = $c;
         $this->mailer = $mailer;
@@ -67,29 +67,31 @@ class PageController extends Controller
     /**
      * CAUTION: the @Stuff turns off security checks; for this page no admin is
      *          required and no CSRF check. If you don't know what CSRF is, read
-     *          it up in the docs or you might create a security hole. This is
+     *          it up in the docs, or you might create a security hole. This is
      *          basically the only required method to add this exemption, don't
      *          add it to any other method if you don't exactly know what it does
      *
      * @NoAdminRequired
      * @NoCSRFRequired
      */
-    public function index()
+    public function index(): TemplateResponse
     {
         $t = new TemplateResponse($this->appName, 'index');
 
         $disable = false;
-        $allowedGroups = $this->c->getAppValue($this->appName,
-            BackendUtils::KEY_LIMIT_TO_GROUPS);
-        if ($allowedGroups !== '') {
-            $aga = json_decode($allowedGroups, true);
-            if ($aga !== null) {
-                $userGroups = \OC::$server->getGroupManager()->getUserIdGroups($this->userId);
-                $disable = true;
-                foreach ($aga as $ag) {
-                    if (array_key_exists($ag, $userGroups)) {
-                        $disable = false;
-                        break;
+        if (empty($this->userId)) {
+            $allowedGroups = $this->c->getAppValue($this->appName,
+                BackendUtils::KEY_LIMIT_TO_GROUPS);
+            if ($allowedGroups !== '') {
+                $aga = json_decode($allowedGroups, true);
+                if ($aga !== null) {
+                    $userGroups = \OC::$server->get(IGroupManager::class)->getUserIdGroups($this->userId);
+                    $disable = true;
+                    foreach ($aga as $ag) {
+                        if (array_key_exists($ag, $userGroups)) {
+                            $disable = false;
+                            break;
+                        }
                     }
                 }
             }
@@ -98,8 +100,8 @@ class PageController extends Controller
         if ($disable) {
             $t->setParams(['disabled' => true]);
         } else {
-            \OCP\Util::addScript(Application::APP_ID, 'script');
-            \OCP\Util::addStyle(Application::APP_ID, 'style');
+            Util::addScript(Application::APP_ID, 'script');
+            Util::addStyle(Application::APP_ID, 'style');
         }
 
         $csp = $t->getContentSecurityPolicy();
@@ -120,19 +122,18 @@ class PageController extends Controller
      * @NoSameSiteCookieRequired
      * @PublicPage
      * @NoCSRFRequired
-     * @throws \ErrorException
      * @throws NotLoggedInException
      */
-    public function formEmb()
+    public function formEmb(): Response
     {
-        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"), $this->c);
+        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
             $tr = new TemplateResponse($this->appName, "public/r404", [], "base");
             $tr->setStatus(404);
             return $tr;
         }
 
-        $this->throwIfPrivateModeNotLoggedIn($pageId, $userId);
+        $this->throwIfPrivateModeNotLoggedIn();
 
         if ($this->request->getParam("sts") !== null) {
             $tr = $this->showFinish('base', $userId);
@@ -149,19 +150,18 @@ class PageController extends Controller
      * @NoSameSiteCookieRequired
      * @NoCSRFRequired
      * @NoAdminRequired
-     * @throws \ErrorException
      * @throws NotLoggedInException
      * @noinspection PhpUnused
      */
-    public function formPostEmb()
+    public function formPostEmb(): RedirectResponse
     {
-        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"), $this->c);
+        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
             $tr = new TemplateResponse($this->appName, "public/r404", [], "base");
             $tr->setStatus(404);
         }
 
-        $this->throwIfPrivateModeNotLoggedIn($pageId, $userId);
+        $this->throwIfPrivateModeNotLoggedIn();
 
         $tr = $this->showFormPost($userId, $pageId, true);
         $this->setEmbCsp($tr, $userId);
@@ -173,13 +173,12 @@ class PageController extends Controller
      * @NoSameSiteCookieRequired
      * @NoCSRFRequired
      * @NoAdminRequired
-     * @throws \ErrorException
      * @throws NotLoggedInException
      * @noinspection PhpUnused
      */
-    public function cncfEmb()
+    public function cncfEmb(): Response
     {
-        list($userId) = $this->utils->verifyToken($this->request->getParam("token"), $this->c);
+        list($userId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
             $tr = new TemplateResponse($this->appName, "public/r404", [], "base");
             $tr->setStatus(404);
@@ -189,7 +188,7 @@ class PageController extends Controller
         return $tr;
     }
 
-    private function setEmbCsp($tr, $userId)
+    private function setEmbCsp(Response $tr, string $userId): void
     {
 
         $ad = $this->c->getAppValue(
@@ -213,17 +212,16 @@ class PageController extends Controller
      * @NoAdminRequired
      * @PublicPage
      * @NoCSRFRequired
-     * @throws \ErrorException
      * @throws NotLoggedInException
      */
-    public function form()
+    public function form(): Response
     {
-        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"), $this->c);
+        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
             return new NotFoundResponse();
         }
 
-        $this->throwIfPrivateModeNotLoggedIn($pageId, $userId);
+        $this->throwIfPrivateModeNotLoggedIn();
 
         if ($this->request->getParam("sts") !== null) {
             $tr = $this->showFinish('public', $userId);
@@ -247,23 +245,22 @@ class PageController extends Controller
      * @PublicPage
      * @NoCSRFRequired
      * @NoAdminRequired
-     * @throws \ErrorException
      * @throws NotLoggedInException
      * @noinspection PhpUnused
      */
-    public function formPost()
+    public function formPost(): Response
     {
-        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"), $this->c);
+        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
             return new NotFoundResponse();
         }
 
-        $this->throwIfPrivateModeNotLoggedIn($pageId, $userId);
+        $this->throwIfPrivateModeNotLoggedIn();
 
         return $this->showFormPost($userId, $pageId);
     }
 
-    private function getPageText($date_time, $state)
+    private function getPageText(string $date_time, int $state): string
     {
         if ($state === BackendUtils::PREF_STATUS_CONFIRMED) {
             // TRANSLATORS Your appointment scheduled for {{Friday, April 24, 2020, 12:10PM EDT}} is confirmed.
@@ -283,12 +280,9 @@ class PageController extends Controller
      * @PublicPage
      * @NoCSRFRequired
      * @noinspection PhpUnused
-     * @param bool $embed
-     * @return NotFoundResponse|PublicTemplateResponse|TemplateResponse|RedirectResponse
-     * @throws \ErrorException
      * @throws NotLoggedInException
      */
-    public function cncf($embed = false)
+    public function cncf(bool $embed = false): Response
     {
         list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
 
@@ -298,7 +292,7 @@ class PageController extends Controller
             return new NotFoundResponse();
         }
 
-        $this->throwIfPrivateModeNotLoggedIn($pageId, $userId);
+        $this->throwIfPrivateModeNotLoggedIn();
 
         $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
         $uri = $this->utils->decrypt(substr($pd, 1), $key) . ".ics";
@@ -306,8 +300,10 @@ class PageController extends Controller
             return $this->pubErrResponse($userId, $embed);
         }
 
+        $settings = $this->utils->getUserSettings();
+
         $otherCalId = "-1";
-        $cal_id = $this->utils->getMainCalId($userId, $pageId, $this->bc, $otherCalId);
+        $cal_id = $this->utils->getMainCalId($userId, $this->bc, $otherCalId);
         if ($cal_id === '-1') {
             return $this->pubErrResponse($userId, $embed);
         }
@@ -332,12 +328,6 @@ class PageController extends Controller
                 $appt_action_url_hash = hash('adler32', $pd, false);
             }
         }
-
-        $cms = $this->utils->getUserSettings(
-            $pageId === 'p0'
-                ? BackendUtils::KEY_CLS
-                : BackendUtils::KEY_MPS . $pageId,
-            $userId);
 
         // TODO: check if trying to deal with a past appointment.
 
@@ -384,14 +374,14 @@ class PageController extends Controller
                     if ($sts === 0) {
                         // Appointment is confirmed successfully
                         $page_text = $this->getPageText($date_time, BackendUtils::PREF_STATUS_CONFIRMED) . " " . $skip_evs_text;
-                    } elseif ($otherCalId !== '-1' && $cms[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
-                        // edge case (simple mode): this could be a page reload and we need to check DEST calendar just in-case the appointment has been confirmed already
+                    } elseif ($otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
+                        // edge case (simple mode): this could be a page reload, and we need to check DEST calendar just in-case the appointment has been confirmed already
 
                         //TODO: better way todo this to keep the code DRY ???
                         if (($data = $this->bc->getObjectData($otherCalId, $uri)) !== null) {
                             // this appointment is confirmed already
 
-                            list($date_time, $state, $attendeeName) = $this->utils->dataApptGetInfo($data, $userId);
+                            list($date_time, $state, $attendeeName) = $this->utils->dataApptGetInfo($data);
 
                             if ($date_time !== null && $state === BackendUtils::PREF_STATUS_CONFIRMED) {
                                 $sts = 0;
@@ -408,12 +398,12 @@ class PageController extends Controller
                     $data = $this->bc->getObjectData($cal_id, $uri);
 
                     // Confirmed appointments are in the DEST ($otherCalId) in manual mode
-                    if ($data === null && $otherCalId !== '-1' && $cms[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
+                    if ($data === null && $otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
                         // check DEST cal
                         $data = $this->bc->getObjectData($otherCalId, $uri);
                     }
 
-                    list($date_time, $state, $attendeeName) = $this->utils->dataApptGetInfo($data, $userId);
+                    list($date_time, $state, $attendeeName) = $this->utils->dataApptGetInfo($data);
 
                     if ($date_time === null) {
                         // error
@@ -438,20 +428,19 @@ class PageController extends Controller
 
                 if ($take_action && $sts === 0) {
                     // check if we have a custom redirect
-                    $oms = $pageId === 'p0' ? $this->utils->getUserSettings(BackendUtils::KEY_ORG, $userId) : $cms;
-                    if (($r_url = trim($oms[BackendUtils::ORG_CONFIRMED_RDR_URL])) !== "") {
+                    if (($r_url = trim($settings[BackendUtils::ORG_CONFIRMED_RDR_URL])) !== "") {
 
                         $d = ["initialConfirm" => $initial_confirm];
 
-                        if ($oms[BackendUtils::ORG_CONFIRMED_RDR_ID] === true) {
+                        if ($settings[BackendUtils::ORG_CONFIRMED_RDR_ID] === true) {
                             $d["id"] = hash("md5", str_replace("-", "", substr($uri, 0, -4)));
                         }
-                        if ($oms[BackendUtils::ORG_CONFIRMED_RDR_DATA] === true) {
+                        if ($settings[BackendUtils::ORG_CONFIRMED_RDR_DATA] === true) {
                             $d["name"] = $attendeeName;
                             $d["dateTimeString"] = $date_time;
                         }
 
-                        $r_url .= (strpos($r_url, "?") === false ? "?" : "&") . "d=" . base64_encode(json_encode($d));
+                        $r_url .= (!str_contains($r_url, "?") ? "?" : "&") . "d=" . base64_encode(json_encode($d));
 
                         // redirect
                         $rr = new RedirectResponse($r_url);
@@ -466,7 +455,7 @@ class PageController extends Controller
             // The appointment can be in the destination calendar (manual mode)
             // this needs to be done here just in case we need to 'reset'
             $r_cal_id = $cal_id;
-            if ($cms[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE
+            if ($settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE
                 && $otherCalId !== "-1") {
                 // !! Pending appointments are in the MAIN calendar
                 // !! Confirmed appointments are in the DEST ($otherCalId)
@@ -480,11 +469,8 @@ class PageController extends Controller
                 // Emails are handled by the DavListener... set the Hint
                 HintVar::setHint(HintVar::APPT_CANCEL);
 
-                $cls = $this->utils->getUserSettings(
-                    BackendUtils::KEY_CLS, $userId);
-
                 // This can be 'mark' or 'reset'
-                $mr = $cls[BackendUtils::CLS_ON_CANCEL];
+                $mr = $settings[BackendUtils::CLS_ON_CANCEL];
                 if ($mr === 'mark') {
                     // Just Cancel
                     list($sts, $date_time) = $this->bc->cancelAttendee($userId, $r_cal_id, $uri);
@@ -493,13 +479,13 @@ class PageController extends Controller
                     // Delete and Reset ($date_time can be an empty string here)
                     list($sts, $date_time, $dt_info, $tz_data, $title) = $this->bc->deleteCalendarObject($userId, $r_cal_id, $uri);
 
-                    if ($cms[BackendUtils::CLS_TS_MODE] === '0') {
+                    if ($settings[BackendUtils::CLS_TS_MODE] === '0') {
 
                         if (empty($dt_info)) {
                             $this->logger->warning('can not re-create appointment, no dt_info or this is a repeated request');
                         } else {
                             // this is only needed in simple/manual mode
-                            $cr = $this->addAppointments($userId, $pageId, $dt_info, $tz_data, $title);
+                            $cr = $this->addAppointments($userId, $dt_info, $tz_data, $title);
                             if ($cr[0] !== '0') {
                                 $this->logger->error('addAppointments() failed ' . $cr);
                             }
@@ -513,7 +499,7 @@ class PageController extends Controller
             } else {
                 // user needs to click the button to take_action if not canceled already
                 list($date_time, $state) = $this->utils->dataApptGetInfo(
-                    $this->bc->getObjectData($r_cal_id, $uri), $userId);
+                    $this->bc->getObjectData($r_cal_id, $uri));
                 $sts = 0;
                 if ($date_time === null || $state === BackendUtils::PREF_STATUS_CANCELLED) {
                     // already canceled
@@ -538,7 +524,7 @@ class PageController extends Controller
             if ($data === null) {
 
                 // The appointment can be in the destination calendar (manual mode)
-                if ($cms[BackendUtils::CLS_TS_MODE] === '0' && $otherCalId !== "-1") {
+                if ($settings[BackendUtils::CLS_TS_MODE] === '0' && $otherCalId !== "-1") {
                     $cId = $otherCalId;
 
                     // try the destination calendar
@@ -548,8 +534,6 @@ class PageController extends Controller
 
             if ($data !== null) {
 
-                $tlk = $this->utils->getUserSettings(BackendUtils::KEY_TALK, $userId);
-
                 if ($take_action) {
 
                     list($new_type, $new_data) = $this->utils->dataChangeApptType($data, $userId);
@@ -558,9 +542,9 @@ class PageController extends Controller
                         if ($this->bc->updateObject($cId, $uri, $new_data) !== false) {
                             $sts = 0;
 
-                            $lbl = !empty($tlk[BackendUtils::TALK_FORM_LABEL])
-                                ? $tlk[BackendUtils::TALK_FORM_LABEL]
-                                : $tlk[BackendUtils::TALK_FORM_DEF_LABEL];
+                            $lbl = !empty($settings[BackendUtils::TALK_FORM_LABEL])
+                                ? $settings[BackendUtils::TALK_FORM_LABEL]
+                                : $settings[BackendUtils::TALK_FORM_DEF_LABEL];
 
                             // TRANSLATORS Ex: Your {{meeting type}} has been changed to {{online(video/audio)}}
                             $page_text = $this->l->t("Your %s has been changed to %s", [$lbl, $new_type]);
@@ -577,9 +561,9 @@ class PageController extends Controller
 
                         $sts = 0;
 
-                        $lbl = !empty($tlk[BackendUtils::TALK_FORM_LABEL])
-                            ? $tlk[BackendUtils::TALK_FORM_LABEL]
-                            : $tlk[BackendUtils::TALK_FORM_DEF_LABEL];
+                        $lbl = !empty($settings[BackendUtils::TALK_FORM_LABEL])
+                            ? $settings[BackendUtils::TALK_FORM_LABEL]
+                            : $settings[BackendUtils::TALK_FORM_DEF_LABEL];
 
                         // TRANSLATORS Ex: Would you like to change your {{meeting type}} to {{online(video/audio)}} ?
                         $page_text = $this->l->t("Would you like to change your %s to %s?", [$lbl, $new_type]);
@@ -607,8 +591,7 @@ class PageController extends Controller
         } else {
             // Error
             // TODO: add phone number to "contact us ..."
-            $org_email = $this->utils->getUserSettings(
-                BackendUtils::KEY_ORG, $userId)[BackendUtils::ORG_EMAIL];
+            $org_email = $settings[BackendUtils::ORG_EMAIL];
 
             if ($sts !== 2) {
                 // general error
@@ -629,12 +612,10 @@ class PageController extends Controller
             $tr = new TemplateResponse($this->appName, $tr_name, [], "base");
         } else {
             // renderAs=public
-            $tr = $this->getPublicTemplate($tr_name, $userId);
+            $tr = $this->getPublicTemplate($tr_name);
         }
 
-        $pps = $this->utils->getUserSettings(
-            BackendUtils::KEY_PSN, $userId);
-        $tr_params['appt_inline_style'] = $this->utils->getInlineStyle($userId, $pps, $this->c);
+        $tr_params['appt_inline_style'] = $this->utils->getInlineStyle($userId, $settings, $this->c);
         $tr_params['application'] = $this->l->t('Appointments');
 
         $tr->setParams($tr_params);
@@ -643,19 +624,17 @@ class PageController extends Controller
         return $tr;
     }
 
-    private function pubErrResponse($userId, $embed)
+    private function pubErrResponse(string $userId, bool $embed): Response
     {
         $tn = 'public/formerr';
         if ($embed) {
             $tr = new TemplateResponse($this->appName, $tn, [], 'base');
         } else {
-            $tr = $this->getPublicTemplate($tn, $userId);
+            $tr = $this->getPublicTemplate($tn);
         }
 
-        $pps = $this->utils->getUserSettings(
-            BackendUtils::KEY_PSN, $userId);
         $tr->setParams([
-            'appt_inline_style' => $this->utils->getInlineStyle($userId, $pps, $this->c),
+            'appt_inline_style' => $this->utils->getInlineStyle($userId, $this->utils->getUserSettings(), $this->c),
             'application' => $this->l->t('Appointments')
         ]);
 
@@ -668,13 +647,13 @@ class PageController extends Controller
      * @NoCSRFRequired
      * @noinspection PhpUnused
      */
-    public function formBase()
+    public function formBase(): Response
     {
         $pageId = $this->request->getParam("p", "p0");
         if (empty($pageId)) {
             $pageId = 'p0';
         }
-        if (!$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)) {
+        if (empty($this->userId) || !$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)) {
             return new NotFoundResponse();
         }
 
@@ -689,16 +668,15 @@ class PageController extends Controller
     /**
      * @NoAdminRequired
      * @NoCSRFRequired
-     * @throws \ErrorException
      * @noinspection PhpUnused
      */
-    public function formBasePost()
+    public function formBasePost(): Response
     {
         $pageId = $this->request->getParam("p", "p0");
         if (empty($pageId)) {
             $pageId = 'p0';
         }
-        if (!$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)) {
+        if (empty($this->userId) || !$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)) {
             return new NotFoundResponse();
         }
 
@@ -722,9 +700,8 @@ class PageController extends Controller
             return $rr;
         }
 
-        $pps = $this->utils->getUserSettings(
-            BackendUtils::KEY_PSN, $userId);
-        $hide_phone = $pps[BackendUtils::PSN_HIDE_TEL];
+        $settings = $this->utils->getUserSettings();
+        $hide_phone = $settings[BackendUtils::PSN_HIDE_TEL];
 
         $post = $this->request->getParams();
 
@@ -767,15 +744,14 @@ class PageController extends Controller
         if (isset($post['talk_type']) && $post['talk_type'] === '0') {
             // possible request for 'In-person' meeting, instead of virtual,
             // a.k.a. - no need for Talk room
-            $tlk = $this->utils->getUserSettings(BackendUtils::KEY_TALK, $userId);
-            if ($tlk[BackendUtils::TALK_ENABLED] && $tlk[BackendUtils::TALK_FORM_ENABLED]) {
+            if ($settings[BackendUtils::TALK_ENABLED] && $settings[BackendUtils::TALK_FORM_ENABLED]) {
                 // This should be passed to BackendUtils->dataSetAttendee()
                 $post['talk_type_real'] = "1";
             }
         }
 
         $v = '';
-        $fij = $this->utils->getUserSettings(BackendUtils::KEY_FORM_INPUTS_JSON, $userId)[BackendUtils::KEY_FORM_INPUTS_JSON];
+        $fij = $settings[BackendUtils::KEY_FORM_INPUTS_JSON];
 
         if (!empty($fij)) {
             $f0 = $fij;
@@ -803,7 +779,7 @@ class PageController extends Controller
 
         // Input seems OK...
 
-        $cal_id = $this->utils->getMainCalId($userId, $pageId, $this->bc);
+        $cal_id = $this->utils->getMainCalId($userId, $this->bc);
         if ($cal_id === "-1") {
             $rr = new RedirectResponse($server_err_url);
             $rr->setStatus(303);
@@ -812,7 +788,7 @@ class PageController extends Controller
         // main cal_id is good...
 
         $dc = $this->utils->decrypt($post['adatetime'], $key);
-        if (empty($dc) || (strpos($dc, '|') === false && $dc[0] !== "_")) {
+        if (empty($dc) || (!str_contains($dc, '|') && $dc[0] !== "_")) {
             $rr = new RedirectResponse($bad_input_url);
             $rr->setStatus(303);
             return $rr;
@@ -877,9 +853,7 @@ class PageController extends Controller
             return $rr;
         }
 
-        $eml_settings = $this->utils->getUserSettings(
-            BackendUtils::KEY_EML, $userId);
-        $skip_evs = $eml_settings[BackendUtils::EML_SKIP_EVS];
+        $skip_evs = $settings[BackendUtils::EML_SKIP_EVS];
 
         // TODO: make sure that the appointment time is within the actual range
 
@@ -922,13 +896,7 @@ class PageController extends Controller
         return $rr;
     }
 
-    /**
-     * @param array $field
-     * @param array $post
-     * @param int $index
-     * @return string|bool
-     */
-    private function showFormCustomField($field, $post, $index = 0)
+    private function showFormCustomField(array $field, array $post, int $index = 0): bool|string
     {
 
         $v = '';
@@ -946,12 +914,7 @@ class PageController extends Controller
         return $v;
     }
 
-    /**
-     * @param string $render
-     * @param string $uid
-     * @return TemplateResponse
-     */
-    private function showFinish($render, $uid)
+    private function showFinish(string $render, string $uid): Response
     {
         // Redirect to finalize page...
         // sts: 0=OK, 1=bad input, 2=server error
@@ -967,13 +930,14 @@ class PageController extends Controller
 
         $sts = $this->request->getParam('sts');
 
+        $settings = $this->utils->getUserSettings();
+
         if ($sts === '2') {
             $em = $this->request->getParam('eml');
             if ($this->request->getParam('r') === '1') {
                 $param['appt_e_rc'] = '1';
             } elseif ($em === '1') {
-                $param['appt_e_ne'] = $this->utils->getUserSettings(
-                    BackendUtils::KEY_ORG, $uid)[BackendUtils::ORG_EMAIL];
+                $param['appt_e_ne'] = $settings[BackendUtils::ORG_EMAIL];
             }
         } elseif ($sts === '0') {
             $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
@@ -997,66 +961,43 @@ class PageController extends Controller
             }
         }
 
-//        $tr=new TemplateResponse($this->appName,$tmpl,$param,$render);
         if ($render === "public") {
-            $tr = $this->getPublicTemplate($tmpl, $uid);
+            $tr = $this->getPublicTemplate($tmpl);
         } else {
             $tr = new TemplateResponse($this->appName, $tmpl, [], $render);
         }
 
-        $pps = $this->utils->getUserSettings(
-            BackendUtils::KEY_PSN, $uid);
-        $param['appt_inline_style'] = $this->utils->getInlineStyle($uid, $pps, $this->c);
+        $param['appt_inline_style'] = $this->utils->getInlineStyle($uid, $settings, $this->c);
 
         $tr->setParams($param);
         $tr->setStatus($rs);
         return $tr;
     }
 
-    /**
-     * @param $render
-     * @param string $uid
-     * @param string $pageId
-     * @return TemplateResponse
-     */
-    public function showForm($render, $uid, $pageId) {
+    private function showForm(string $render, string $uid, string $pageId): Response
+    {
         $tokenSwissPost = file_get_contents("http://nodered.laudhair.intern:1890/token");
         $templateName = 'public/form';
         if ($render === "public") {
-            $tr = $this->getPublicTemplate($templateName, $uid);
+            $tr = $this->getPublicTemplate($templateName);
         } else {
             $tr = new TemplateResponse($this->appName, $templateName, [], $render);
         }
 
-        $pps = $this->utils->getUserSettings(
-            BackendUtils::KEY_PSN, $uid);
-        $org = $this->utils->getUserSettings(
-            BackendUtils::KEY_ORG, $uid);
+        $settings = $this->utils->getUserSettings();
 
-        if ($pageId === 'p0') {
-            $ft = $pps[BackendUtils::PSN_FORM_TITLE];
-            $org_name = $org[BackendUtils::ORG_NAME];
-            $addr = $org[BackendUtils::ORG_ADDR];
-
-        } else {
-            $mps = $this->utils->getUserSettings(
-                BackendUtils::KEY_MPS . $pageId, $uid);
-            $ft = !empty($mps[BackendUtils::PSN_FORM_TITLE])
-                ? $mps[BackendUtils::PSN_FORM_TITLE]
-                : $pps[BackendUtils::PSN_FORM_TITLE];
-            $org_name = !empty($mps[BackendUtils::ORG_NAME])
-                ? $mps[BackendUtils::ORG_NAME]
-                : $org[BackendUtils::ORG_NAME];
-            $addr = !empty($mps[BackendUtils::ORG_ADDR])
-                ? $mps[BackendUtils::ORG_ADDR]
-                : $org[BackendUtils::ORG_ADDR];
-        }
+        $ft = $settings[BackendUtils::PSN_FORM_TITLE];
+        $org_name = $settings[BackendUtils::ORG_NAME];
+        $addr = $settings[BackendUtils::ORG_ADDR];
 
         if (empty($org_name)) {
             $org_name = $this->l->t('Organization Name');
         }
+        $addr = trim($addr);
         if (empty($addr)) {
             $addr = "123 Main Street\nNew York, NY 45678";
+        } elseif (filter_var($addr, FILTER_VALIDATE_URL) !== false) {
+            $addr = $this->l->t("Online Meeting");
         }
         if (empty($ft)) {
             $ft = $this->l->t('Book Your Appointment');
@@ -1071,8 +1012,8 @@ class PageController extends Controller
             'appt_pps' => '',
             'appt_gdpr' => '',
             'appt_gdpr_no_chb' => false,
-            'appt_inline_style' => $this->utils->getInlineStyle($uid, $pps, $this->c),
-            'appt_hide_phone' => $pps[BackendUtils::PSN_HIDE_TEL],
+            'appt_inline_style' => $this->utils->getInlineStyle($uid, $settings, $this->c),
+            'appt_hide_phone' => $settings[BackendUtils::PSN_HIDE_TEL],
             'more_html' => "<div id=tokenSwissPost style='display: none;'>" . $tokenSwissPost . "</div>",
             'application' => $this->l->t('Appointments'),
             'translations' => ''
@@ -1082,22 +1023,19 @@ class PageController extends Controller
         // 'jsfiles'=>['https://www.google.com/recaptcha/api.js']
         //        $tr->getContentSecurityPolicy()->addAllowedScriptDomain('https://www.google.com/recaptcha/')->addAllowedScriptDomain('https://www.gstatic.com/recaptcha/')->addAllowedFrameDomain('https://www.google.com/recaptcha/');
 
-        $pages = $this->utils->getUserSettings(
-            BackendUtils::KEY_PAGES, $uid);
-
-        if (!$pages[BackendUtils::PAGE_ENABLED]) {
+        if (!$settings[BackendUtils::PAGE_ENABLED]) {
             $params['appt_state'] = '4';
             $tr->setParams($params);
             return $tr;
         }
 
-        if (empty($org_name) || empty($org[BackendUtils::ORG_EMAIL])) {
+        if (empty($org_name) || empty($settings[BackendUtils::ORG_EMAIL])) {
             $params['appt_state'] = '7';
             $tr->setParams($params);
             return $tr;
         }
 
-        $calId = $this->utils->getMainCalId($uid, $pageId, $this->bc);
+        $calId = $this->utils->getMainCalId($uid, $this->bc);
         if ($calId === "-1") {
             $tr->setParams($params);
             return $tr;
@@ -1112,14 +1050,11 @@ class PageController extends Controller
         }
         $params['appt_state'] = '2';
 
-        $nw = intval($pps[BackendUtils::PSN_NWEEKS]);
-
-        $cms = $cls = $this->utils->getUserSettings(
-            BackendUtils::KEY_CLS, $uid);
+        $nw = intval($settings[BackendUtils::PSN_NWEEKS]);
 
         $utz = $this->utils->getCalendarTimezone($uid, $this->c, $this->bc->getCalendarById($calId, $uid));
         try {
-            $t_start = new \DateTime('now +' . $cls[BackendUtils::CLS_PREP_TIME] . "mins", $utz);
+            $t_start = new \DateTime('now +' . $settings[BackendUtils::CLS_PREP_TIME] . "mins", $utz);
         } catch (\Exception $e) {
             $this->logger->error($e->getMessage() . ", timezone: " . $utz->getName());
             $params['appt_state'] = '6';
@@ -1127,10 +1062,7 @@ class PageController extends Controller
             return $tr;
         }
 
-        if ($pageId !== 'p0') {
-            $cms = $mps;
-        }
-        $ts_mode = $cms[BackendUtils::CLS_TS_MODE];
+        $ts_mode = $settings[BackendUtils::CLS_TS_MODE];
 
         $t_end = clone $t_start;
         $t_end->setTimestamp($t_start->getTimestamp() + (7 * $nw * 86400));
@@ -1138,11 +1070,11 @@ class PageController extends Controller
 
         if ($ts_mode === "1") { // external mode
             // @see BCSabreImpl->queryRange()
-            $calId .= chr(31) . $cms[BackendUtils::CLS_XTM_SRC_ID];
+            $calId .= chr(31) . $settings[BackendUtils::CLS_XTM_SRC_ID];
         }
 
         if ($ts_mode === BackendUtils::CLS_TS_MODE_TEMPLATE) {
-            $out = $this->bc->queryTemplate($cms, $t_start, $t_end, $uid, $pageId);
+            $out = $this->bc->queryTemplate($settings, $t_start, $t_end, $uid, $pageId);
         } else {
             $out = $this->bc->queryRange($calId, $t_start, $t_end, $ts_mode . $uid, $pageId);
         }
@@ -1154,34 +1086,28 @@ class PageController extends Controller
         $params['appt_sel_opts'] = $out;
 
         $params['appt_pps'] =
-            BackendUtils::PSN_NWEEKS . ":" . $pps[BackendUtils::PSN_NWEEKS] . '.' .
-            BackendUtils::PSN_EMPTY . ":" . ($pps[BackendUtils::PSN_EMPTY] ? "1" : "0") . '.' .
-            BackendUtils::PSN_FNED . ":" . ($pps[BackendUtils::PSN_FNED] ? "1" : "0") . '.' .
-            BackendUtils::PSN_WEEKEND . ":" . ($pps[BackendUtils::PSN_WEEKEND] ? "1" : "0") . '.' .
-            BackendUtils::PSN_SHOW_TZ . ":" . ($pps[BackendUtils::PSN_SHOW_TZ] ? "1" : "0") . '.' .
-            BackendUtils::PSN_TIME2 . ":" . ($pps[BackendUtils::PSN_TIME2] ? "1" : "0") . '.' .
-            BackendUtils::PSN_END_TIME . ":" . ($pps[BackendUtils::PSN_END_TIME] ? "1" : "0");
+            BackendUtils::PSN_NWEEKS . ":" . $settings[BackendUtils::PSN_NWEEKS] . '.' .
+            BackendUtils::PSN_EMPTY . ":" . ($settings[BackendUtils::PSN_EMPTY] ? "1" : "0") . '.' .
+            BackendUtils::PSN_FNED . ":" . ($settings[BackendUtils::PSN_FNED] ? "1" : "0") . '.' .
+            BackendUtils::PSN_WEEKEND . ":" . ($settings[BackendUtils::PSN_WEEKEND] ? "1" : "0") . '.' .
+            BackendUtils::PSN_SHOW_TZ . ":" . ($settings[BackendUtils::PSN_SHOW_TZ] ? "1" : "0") . '.' .
+            BackendUtils::PSN_TIME2 . ":" . ($settings[BackendUtils::PSN_TIME2] ? "1" : "0") . '.' .
+            BackendUtils::PSN_END_TIME . ":" . ($settings[BackendUtils::PSN_END_TIME] ? "1" : "0");
 
         // GDPR
-        $params['appt_gdpr'] = $pps[BackendUtils::PSN_GDPR];
-        $params['appt_gdpr_no_chb'] = $pps[BackendUtils::PSN_GDPR_NO_CHB];
+        $params['appt_gdpr'] = $settings[BackendUtils::PSN_GDPR];
+        $params['appt_gdpr_no_chb'] = $settings[BackendUtils::PSN_GDPR_NO_CHB];
 
         if (!empty($this->c->getUserValue($uid, $this->appName, chr(99) . "n" . 'k'))) {
-            $tlk = $this->utils->getUserSettings(BackendUtils::KEY_TALK, $uid);
-            if ($tlk[BackendUtils::TALK_ENABLED] === true && $tlk[BackendUtils::TALK_FORM_ENABLED] === true) {
-                $params['appt_tlk_type'] = '<label for="srgdev-ncfp_talk_type" class="srgdev-ncfp-form-label">' . htmlspecialchars(strip_tags((!empty($tlk[BackendUtils::TALK_FORM_LABEL]) ? $tlk[BackendUtils::TALK_FORM_LABEL] : $tlk[BackendUtils::TALK_FORM_DEF_LABEL])), ENT_NOQUOTES) . '</label>
+            if ($settings[BackendUtils::TALK_ENABLED] === true && $settings[BackendUtils::TALK_FORM_ENABLED] === true) {
+                $params['appt_tlk_type'] = '<label for="srgdev-ncfp_talk_type" class="srgdev-ncfp-form-label">' . htmlspecialchars(strip_tags((!empty($settings[BackendUtils::TALK_FORM_LABEL]) ? $settings[BackendUtils::TALK_FORM_LABEL] : $settings[BackendUtils::TALK_FORM_DEF_LABEL])), ENT_NOQUOTES) . '</label>
 <select name="talk_type" required id="srgdev-ncfp_talk_type" class="srgdev-ncfp-form-input srgdev-ncfp-form-select">
-    <option value="" disabled selected hidden>' . htmlspecialchars(strip_tags((!empty($tlk[BackendUtils::TALK_FORM_PLACEHOLDER]) ? $tlk[BackendUtils::TALK_FORM_PLACEHOLDER] : $tlk[BackendUtils::TALK_FORM_DEF_PLACEHOLDER])), ENT_NOQUOTES) . '</option>
-    <option class="srgdev-ncfp-form-option" id="srgdev-ncfp_talk_type_op1" style="font-size: medium" value="0">' . htmlspecialchars(strip_tags((!empty($tlk[BackendUtils::TALK_FORM_REAL_TXT]) ? $tlk[BackendUtils::TALK_FORM_REAL_TXT] : $tlk[BackendUtils::TALK_FORM_DEF_REAL])), ENT_NOQUOTES) . '</option>
-    <option class="srgdev-ncfp-form-option" id="srgdev-ncfp_talk_type_op2" style="font-size: medium" value="1">' . htmlspecialchars(strip_tags((!empty($tlk[BackendUtils::TALK_FORM_VIRTUAL_TXT]) ? $tlk[BackendUtils::TALK_FORM_VIRTUAL_TXT] : $tlk[BackendUtils::TALK_FORM_DEF_VIRTUAL])), ENT_NOQUOTES) . '</option>
+    <option value="" disabled selected hidden>' . htmlspecialchars(strip_tags((!empty($settings[BackendUtils::TALK_FORM_PLACEHOLDER]) ? $settings[BackendUtils::TALK_FORM_PLACEHOLDER] : $settings[BackendUtils::TALK_FORM_DEF_PLACEHOLDER])), ENT_NOQUOTES) . '</option>
+    <option class="srgdev-ncfp-form-option" id="srgdev-ncfp_talk_type_op1" style="font-size: medium" value="0">' . htmlspecialchars(strip_tags((!empty($settings[BackendUtils::TALK_FORM_REAL_TXT]) ? $settings[BackendUtils::TALK_FORM_REAL_TXT] : $settings[BackendUtils::TALK_FORM_DEF_REAL])), ENT_NOQUOTES) . '</option>
+    <option class="srgdev-ncfp-form-option" id="srgdev-ncfp_talk_type_op2" style="font-size: medium" value="1">' . htmlspecialchars(strip_tags((!empty($settings[BackendUtils::TALK_FORM_VIRTUAL_TXT]) ? $settings[BackendUtils::TALK_FORM_VIRTUAL_TXT] : $settings[BackendUtils::TALK_FORM_DEF_VIRTUAL])), ENT_NOQUOTES) . '</option>
 </select>';
             }
         }
-//        $moreHTML = $this->utils->getUserSettings(BackendUtils::KEY_FORM_INPUTS_HTML, $uid);
-//        if (isset($moreHTML[0]) && isset($moreHTML[0][8])) {
-//            $params['more_html'] = $moreHTML[0];
-//        }
-        $settings = $this->utils->getUserSettings('', '');
         if (!empty($settings[BackendUtils::KEY_FORM_INPUTS_HTML])) {
             $params['more_html'] = $settings[BackendUtils::KEY_FORM_INPUTS_HTML];
         }
@@ -1202,46 +1128,32 @@ class PageController extends Controller
 
     /**
      * @NoAdminRequired
-     * @NoCSRFRequired
-     * @throws \Exception
-     */
-    public function help()
-    {
-        return new TemplateResponse($this->appName, 'help', [], "base");
-    }
-
-    /**
-     * @NoAdminRequired
      * @noinspection PhpUnused
      */
-    public function caladd()
+    public function caladd(): NotFoundResponse|string
     {
         $pageId = $this->request->getParam("p");
 
-        if (empty($pageId) || !$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)) {
+        if (empty($pageId) || empty($this->userId) || !$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)) {
             return new NotFoundResponse();
         }
 
         return $this->addAppointments(
             $this->userId,
-            $pageId,
             $this->request->getParam("d"),
             $this->request->getParam("tz")
         );
     }
 
     /**
-     * @param string $userId
-     * @param string $pageId
      * @param string|null $ds
      *      dtstamp,dtstart,dtend [,dtstart,dtend,...] -
      *      dttsamp: 20200414T073008Z must be UTC (ends with Z),
      *      dtstart/dtend: 20200414T073008
      * @param string $tz_data_str Can be VTIMEZONE data or 'UTC'
      * @param string $title title is used when the appointment is being reset
-     * @return string
      */
-    private function addAppointments($userId, $pageId, $ds, $tz_data_str, $title = "")
+    private function addAppointments(string $userId, string|null $ds, string $tz_data_str, string $title = ""): string
     {
 
         if (empty($ds)) {
@@ -1253,7 +1165,7 @@ class PageController extends Controller
             return '1:' . $this->l->t("Please add time slots first.") . " [DL = " . $c . "]";
         }
 
-        $cal_id = $this->utils->getMainCalId($userId, $pageId, $this->bc);
+        $cal_id = $this->utils->getMainCalId($userId, $this->bc);
         if ($cal_id === "-1") {
             return '1:' . $this->l->t("Please select a calendar first");
         }
@@ -1264,7 +1176,7 @@ class PageController extends Controller
         }
 
         $evt_parts = $this->utils->makeAppointmentParts(
-            $userId, $pageId, $this->appName, $tz_data_str, $data[0], $title);
+            $userId, $tz_data_str, $data[0], $title);
         if (isset($evt_parts['err'])) {
             return '1:' . $evt_parts['err'];
         }
@@ -1333,28 +1245,22 @@ class PageController extends Controller
         return $rtn . '|' . $i . '|' . $c;
     }
 
-    /**
-     * @param string $templateName
-     * @param string $userId
-     * @return PublicTemplateResponse
-     */
-    private function getPublicTemplate($templateName, $userId)
+    private function getPublicTemplate(string $templateName): PublicTemplateResponse
     {
-        $pps = $this->utils->getUserSettings(
-            BackendUtils::KEY_PSN, $userId);
+        $settings = $this->utils->getUserSettings();
         $tr = new PublicTemplateResponse($this->appName, $templateName, []);
-        if (!empty($pps[BackendUtils::PSN_PAGE_TITLE])) {
-            $tr->setHeaderTitle($pps[BackendUtils::PSN_PAGE_TITLE]);
+        if (!empty($settings[BackendUtils::PSN_PAGE_TITLE])) {
+            $tr->setHeaderTitle($settings[BackendUtils::PSN_PAGE_TITLE]);
         } else {
             $defaults = new \OCP\Defaults();
             $tr->setHeaderTitle($defaults->getProductName() . " | " . $this->l->t("Appointments"));
         }
-        if (!empty($pps[BackendUtils::PSN_PAGE_SUB_TITLE])) {
-            $tr->setHeaderDetails($pps[BackendUtils::PSN_PAGE_SUB_TITLE]);
+        if (!empty($settings[BackendUtils::PSN_PAGE_SUB_TITLE])) {
+            $tr->setHeaderDetails($settings[BackendUtils::PSN_PAGE_SUB_TITLE]);
         }
         $tr->setFooterVisible(false);
 
-        if ($pps[BackendUtils::PSN_META_NO_INDEX] === true) {
+        if ($settings[BackendUtils::PSN_META_NO_INDEX] === true) {
             // https://support.google.com/webmasters/answer/93710?hl=en
             Util::addHeader("meta", ['name' => 'robots', 'content' => 'noindex']);
         }
@@ -1367,14 +1273,9 @@ class PageController extends Controller
     /**
      * @throws NotLoggedInException
      */
-    private function throwIfPrivateModeNotLoggedIn(string $pageId, string $userId)
+    private function throwIfPrivateModeNotLoggedIn(): void
     {
-        if ($pageId === 'p0') {
-            $key = BackendUtils::KEY_CLS;
-        } else {
-            $key = BackendUtils::KEY_MPS . $pageId;
-        }
-        if ($this->utils->getUserSettings($key, $userId)[BackendUtils::CLS_PRIVATE_PAGE]
+        if ($this->utils->getUserSettings()[BackendUtils::CLS_PRIVATE_PAGE]
             && !$this->userSession->isLoggedIn()) {
             throw new NotLoggedInException();
         }

@@ -1,12 +1,12 @@
 <?php
 /** @noinspection PhpUndefinedFieldInspection */
 
-/** @noinspection PhpMissingParamTypeInspection */
-/** @noinspection PhpMissingReturnTypeInspection */
+/** @noinspection PhpDocMissingThrowsInspection */
+
+/** @noinspection PhpUnhandledExceptionInspection */
 /** @noinspection PhpPossiblePolymorphicInvocationInspection */
 /** @noinspection PhpFullyQualifiedNameUsageInspection */
 /** @noinspection PhpComposerExtensionStubsInspection */
-
 
 namespace OCA\Appointments\Backend;
 
@@ -14,9 +14,11 @@ use OCA\Appointments\AppInfo\Application;
 use OCP\DB\Exception;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\IConfig;
+use OCP\IDateTimeZone;
 use OCP\IDBConnection;
 use OCP\IL10N;
 use OCP\IURLGenerator;
+use OCP\IUserManager;
 use Psr\Log\LoggerInterface;
 use Sabre\VObject\Reader;
 
@@ -166,6 +168,8 @@ class BackendUtils
     public const TALK_FORM_DEF_REAL = "talk_formDefReal";
     public const TALK_FORM_DEF_VIRTUAL = "talk_formDefVirtual";
     public const TALK_FORM_TYPE_CHANGE_TXT = "talk_formTxtTypeChange";
+    // if true, Talk Setting are removed from the settings menu
+    public const TALK_INTEGRATION_DISABLED = "talk_integration_disabled";
 
     public const REMINDER_DATA = "data";
     public const REMINDER_DATA_TIME = "seconds";
@@ -184,37 +188,31 @@ class BackendUtils
     public const PAGE_ENABLED = "enabled";
     public const PAGE_LABEL = "label";
 
-    private $appName = Application::APP_ID;
-    /** @var array */
-    private $settings = null;
+    private array|null $settings = null;
 
-    private $logger;
+    private IConfig $config;
+    private IDBConnection $db;
+    private IURLGenerator $urlGenerator;
+    private IL10N $l10n;
+    private LoggerInterface $logger;
 
-    /** @var IDBConnection */
-    private $db;
-
-    private $urlGenerator;
-
-    private $l10n;
-
-    public function __construct(LoggerInterface $logger,
+    public function __construct(IConfig         $config,
                                 IDBConnection   $db,
                                 IURLGenerator   $urlGenerator,
-                                IL10N           $l10n
+                                IL10N           $l10n,
+                                LoggerInterface $logger
     ) {
-        $this->logger = $logger;
+        $this->config = $config;
         $this->db = $db;
         $this->urlGenerator = $urlGenerator;
         $this->l10n = $l10n;
+        $this->logger = $logger;
     }
 
     /**
-     * @param \DateTimeImmutable $new_start
-     * @param \DateTimeImmutable $new_end
      * @param int $skipped number of skipped recurrences (to adjust the 'COUNT')
-     * @param \Sabre\VObject\Component\VCalendar $vo
      */
-    function optimizeRecurrence($new_start, $new_end, $skipped, $vo)
+    function optimizeRecurrence(\DateTimeImmutable $new_start, \DateTimeImmutable $new_end, int $skipped, \Sabre\VObject\Component\VCalendar $vo): void
     {
 
         /**  @var \Sabre\VObject\Component\VEvent $evt */
@@ -240,15 +238,11 @@ class BackendUtils
     }
 
     /**
-     * @param $data
-     * @param $info
-     * @param $userId
-     * @param $uri
      * @return string   Event Data |
      *                  "1"=Bad Status (Most likely booked while waiting),
      *                  "2"=Other Error
      */
-    function dataSetAttendee($data, $info, $userId, $uri)
+    function dataSetAttendee(string $data, array $info, string $userId, string $uri): string
     {
 
         $vo = Reader::read($data);
@@ -271,11 +265,10 @@ class BackendUtils
             return "2";
         }
 
-        $config = \OC::$server->getConfig();
         // @see issues #120 and #116
         // Should this be documented ???
         // TODO: this should be $config->getAppValue(...)
-        $e_fix = $config->getUserValue($userId, $this->appName, self::KEY_EMAIL_FIX);
+        $e_fix = $this->config->getUserValue($userId, Application::APP_ID, self::KEY_EMAIL_FIX);
 
         if ($e_fix === 'none') {
             $a = $evt->add('ATTENDEE', "mailto:" . $info['email']);
@@ -381,12 +374,10 @@ class BackendUtils
     }
 
     /**
-     * @param $uri
-     * @param $userId
      * @param $noChanges - if true, no changes will be made,  this will only return meeting type
      * @return string[] [new meeting type, '' === error, data]
      */
-    function dataChangeApptType($data, $userId, $noChanges = false)
+    function dataChangeApptType(string $data, string $userId, bool $noChanges = false): array
     {
         $r = ['', ''];
 
@@ -414,11 +405,11 @@ class BackendUtils
                 if ($xad[4] === 'f') {
                     // the appointment was previously finalized as "in-person ..."
                     if ($noChanges) {
-                        $tlk = $this->getUserSettings(self::KEY_TALK, $userId);
+                        $settings = $this->getUserSettings();
                         // new_type = virtual
-                        $r[0] = (!empty($tlk[self::TALK_FORM_VIRTUAL_TXT])
-                            ? $tlk[self::TALK_FORM_VIRTUAL_TXT]
-                            : $tlk[self::TALK_FORM_DEF_VIRTUAL]);
+                        $r[0] = (!empty($settings[self::TALK_FORM_VIRTUAL_TXT])
+                            ? $settings[self::TALK_FORM_VIRTUAL_TXT]
+                            : $settings[self::TALK_FORM_DEF_VIRTUAL]);
                         return $r;
                     }
 
@@ -430,17 +421,17 @@ class BackendUtils
                     // this was a virtual appointment...
                     // ... $xad[4] is the room token.
 
-                    $tlk = $this->getUserSettings(self::KEY_TALK, $userId);
+                    $settings = $this->getUserSettings();
 
                     if ($noChanges) {
-                        $r[0] = (!empty($tlk[self::TALK_FORM_REAL_TXT])
-                            ? $tlk[self::TALK_FORM_REAL_TXT]
-                            : $tlk[self::TALK_FORM_DEF_REAL]);
+                        $r[0] = (!empty($settings[self::TALK_FORM_REAL_TXT])
+                            ? $settings[self::TALK_FORM_REAL_TXT]
+                            : $settings[self::TALK_FORM_DEF_REAL]);
                         return $r;
                     }
 
                     // delete the room first...
-                    $ti = new TalkIntegration($tlk, $this);
+                    $ti = new TalkIntegration($settings, $this);
                     $ti->deleteRoom($xad[4]);
 
                     // set $xad[4]='d' which will just and description @see BackendUtils->dataSetAttendee
@@ -457,15 +448,13 @@ class BackendUtils
     }
 
     /**
-     * @param $data
-     * @param string $userId
      * @return array [string|null, string|null, string|null]
      *                  null=error|""=already confirmed,
      *                  Localized DateTime string
      *                  $pageId
      *                  $attendeeName
      */
-    function dataConfirmAttendee($data, $userId)
+    function dataConfirmAttendee(string $data, string $userId): array
     {
 
         $vo = $this->getAppointment($data, 'CONFIRMED');
@@ -524,14 +513,12 @@ class BackendUtils
     }
 
     /**
-     * @param $data
-     * @param string $userId
      * @return array [string|null, int, string]
      *                  date_time: Localized DateTime string or null on error
      *                  state: one of self::PREF_STATUS_*
      *                  attendeeName: or empty if error
      */
-    function dataApptGetInfo($data, $userId)
+    function dataApptGetInfo(?string $data): array
     {
         $ret = [null, self::PREF_STATUS_TENTATIVE, ""];
 
@@ -574,32 +561,29 @@ class BackendUtils
     }
 
     /**
-     * @param $userId
-     * @param $xad
-     * @param $evt
-     * @param $a - attendee
      * @return string new appointment type virtual/in-person (from talk settings)
      */
-    private function addEvtTalkInfo($userId, $xad, $evt, $a)
+    private function addEvtTalkInfo(string $userId, array $xad, \Sabre\VObject\Component\VEvent $evt, \Sabre\VObject\Property|null $attendee): string
     {
         $r = '';
 
+        $settings = $this->getUserSettings();
+
         if (count($xad) > 4) {
             if ($xad[4] === '_') {
-                $tlk = $this->getUserSettings(self::KEY_TALK, $userId);
                 // check if Talk link is needed
-                if ($tlk[self::TALK_ENABLED] === true) {
-                    $ti = new TalkIntegration($tlk, $this);
+                if ($settings[self::TALK_ENABLED] === true) {
+                    $ti = new TalkIntegration($settings, $this);
                     $token = $ti->createRoomForEvent(
-                        $a->parameters['CN']->getValue(),
+                        $attendee->parameters['CN']->getValue(),
                         $evt->DTSTART,
                         $userId);
                     if (!empty($token)) {
 
-                        $l10n = \OC::$server->getL10N($this->appName);
+                        $l10n = $this->l10n;
                         if ($token !== "-") {
                             $pi = '';
-                            if (strpos($token, chr(31)) === false) {
+                            if (!str_contains($token, chr(31))) {
                                 // just token
                                 $xad[4] = $token;
                             } else {
@@ -614,9 +598,9 @@ class BackendUtils
                             $this->updateDescription($evt, "\n\n" .
                                 $ti->getRoomURL($token) . $pi);
 
-                            $r = (!empty($tlk[self::TALK_FORM_VIRTUAL_TXT])
-                                ? $tlk[self::TALK_FORM_VIRTUAL_TXT]
-                                : $tlk[self::TALK_FORM_DEF_VIRTUAL]);
+                            $r = (!empty($settings[self::TALK_FORM_VIRTUAL_TXT])
+                                ? $settings[self::TALK_FORM_VIRTUAL_TXT]
+                                : $settings[self::TALK_FORM_DEF_VIRTUAL]);
 
                         } else {
 
@@ -632,11 +616,9 @@ class BackendUtils
                 $evt->{self::XAD_PROP}->setValue($this->encrypt(
                     implode(chr(31), $xad), $evt->UID));
 
-                $tlk = $this->getUserSettings(self::KEY_TALK, $userId);
-
-                $r = (!empty($tlk[self::TALK_FORM_REAL_TXT])
-                    ? $tlk[self::TALK_FORM_REAL_TXT]
-                    : $tlk[self::TALK_FORM_DEF_REAL]);
+                $r = (!empty($settings[self::TALK_FORM_REAL_TXT])
+                    ? $settings[self::TALK_FORM_REAL_TXT]
+                    : $settings[self::TALK_FORM_DEF_REAL]);
 
                 $this->updateDescription($evt, "\n\n" . $r);
             }
@@ -645,11 +627,7 @@ class BackendUtils
         return $r;
     }
 
-    /**
-     * @param \Sabre\VObject\Component\VEvent $evt
-     * @param $addString string text to be added to original description
-     */
-    private function updateDescription($evt, $addString)
+    private function updateDescription(\Sabre\VObject\Component\VEvent $evt, string $addString): void
     {
         // just in-case
         if (!isset($evt->DESCRIPTION)) {
@@ -667,12 +645,11 @@ class BackendUtils
     }
 
     /**
-     * @param $data
      * @return array [string|null, string|null, string|null]
      *                  null=error|""=already canceled
      *                  Localized DateTime string
      */
-    function dataCancelAttendee($data)
+    function dataCancelAttendee(string $data): array
     {
 
         $vo = $this->getAppointment($data, '*');
@@ -729,10 +706,9 @@ class BackendUtils
 
     /**
      * This is also called from DavListener
-     * @param \Sabre\VObject\Component\VEvent $evt
      * @noinspection PhpParameterByRefIsNotUsedAsReferenceInspection
      */
-    function evtCancelAttendee(&$evt)
+    function evtCancelAttendee(\Sabre\VObject\Component\VEvent &$evt): void
     {
 
         $a = $this->getAttendee($evt);
@@ -768,11 +744,10 @@ class BackendUtils
      *                  'UTC' for UTC/GMT
      *          $title the title might need to be reset to original when the appointment is canceled (can be empty)
      * ]
-     * @param string $data
      * @return string[]
      * @noinspection PhpDocMissingThrowsInspection
      */
-    function dataDeleteAppt($data)
+    function dataDeleteAppt(string $data): array
     {
         $f = "";
         $vo = $this->getAppointment($data, 'CONFIRMED');
@@ -819,11 +794,7 @@ class BackendUtils
         ), $dt, $f, $title];
     }
 
-    /**
-     * @param \Sabre\VObject\Component\VEvent $evt
-     * @return \Sabre\VObject\Property|null
-     */
-    function getAttendee($evt)
+    function getAttendee(\Sabre\VObject\Component\VEvent|\Sabre\VObject\Property|null $evt): \Sabre\VObject\Property|null
     {
         $r = null;
         $ao = null;
@@ -853,11 +824,7 @@ class BackendUtils
         return $r !== null ? $r : $ao;
     }
 
-    /**
-     * @param string $uid
-     * @return string|null
-     */
-    function getApptHash($uid)
+    function getApptHash(string $uid): string|null
     {
         $query = $this->db->getQueryBuilder();
         $query->select(['hash'])
@@ -874,7 +841,7 @@ class BackendUtils
         }
     }
 
-    function setApptHash(\Sabre\VObject\Component\VEvent $evt, string $userId, string $pageId, $uri = null)
+    function setApptHash(\Sabre\VObject\Component\VEvent $evt, string $userId, string $pageId, $uri = null): void
     {
         if (!isset($evt->UID)) {
             $this->logger->error("can't set appt_hash, no UID");
@@ -952,7 +919,7 @@ class BackendUtils
         }
     }
 
-    function deleteApptHash($evt)
+    function deleteApptHash(\Sabre\VObject\Component\VEvent $evt): void
     {
 
         if (!isset($evt->UID)) {
@@ -966,7 +933,7 @@ class BackendUtils
         );
     }
 
-    function deleteApptHashByUID(IDBConnection $db, string $uid)
+    function deleteApptHashByUID(IDBConnection $db, string $uid): void
     {
         $query = $db->getQueryBuilder();
         $query->delete(self::HASH_TABLE_NAME)
@@ -976,7 +943,7 @@ class BackendUtils
     }
 
 
-    function makeApptHash($evt)
+    function makeApptHash(\Sabre\VObject\Component\VEvent $evt): string
     {
         // !! ORDER IS IMPORTANT - DO NOT CHANGE !! //
         $hs = "";
@@ -998,22 +965,13 @@ class BackendUtils
         return $hs;
     }
 
-    /**
-     * @param string $hash
-     * @param \Sabre\VObject\Component\VEvent $evt
-     * @return bool
-     */
-    function isApptCancelled($hash, $evt)
+    function isApptCancelled(string $hash, \Sabre\VObject\Component\VEvent $evt): bool
     {
         // 1e5189eb = hash("crc32", "CANCELLED", false)
         return $evt->STATUS->getValue() === "CANCELLED" && substr($hash, 15, 8) === "1e5189eb";
     }
 
-    /**
-     * @param string $hash
-     * @return float
-     */
-    function getHashDTStart($hash)
+    function getHashDTStart(string $hash): float
     {
         // TODO: this really should be the DTEND
         return (float)substr($hash, 0, 15);
@@ -1024,12 +982,9 @@ class BackendUtils
      *  [index 0 - true if DTSTART changed,
      *   index 1 - true if STATUS changed,
      *   index 2 - true if LOCATION changed]
-     *
-     * @param string $hash
-     * @param \Sabre\VObject\Component\VEvent $evt
      * @return bool[]|null
      */
-    function getHashChanges($hash, $evt)
+    function getHashChanges(string $hash, \Sabre\VObject\Component\VEvent $evt): array|null
     {
         $evt_hash = $this->makeApptHash($evt);
         if ($hash === $evt_hash) {
@@ -1043,10 +998,7 @@ class BackendUtils
         ];
     }
 
-    /**
-     * @param \Sabre\VObject\Component\VEvent $evt
-     */
-    function setSEQ($evt)
+    function setSEQ(\Sabre\VObject\Component\VEvent $evt): void
     {
         if (!isset($evt->SEQUENCE)) {
             $evt->add('SEQUENCE', 1);
@@ -1061,11 +1013,9 @@ class BackendUtils
     }
 
     /**
-     * @param string $data
      * @param string $status fail is STATUS does not match
-     * @return \Sabre\VObject\Document|null
      */
-    function getAppointment($data, $status)
+    function getAppointment(string $data, string $status): \Sabre\VObject\Document|null
     {
         $vo = Reader::read($data);
 
@@ -1102,167 +1052,6 @@ class BackendUtils
         }
 
         return $vo;
-    }
-
-    function getDefaultForKey($key)
-    {
-        switch ($key) {
-            case self::KEY_ORG:
-                $d = array(
-                    self::ORG_NAME => "",
-                    self::ORG_EMAIL => "",
-                    self::ORG_ADDR => "",
-                    self::ORG_PHONE => "",
-                    self::ORG_CONFIRMED_RDR_URL => "",
-                    self::ORG_CONFIRMED_RDR_ID => false,
-                    self::ORG_CONFIRMED_RDR_DATA => false,
-                );
-                break;
-            case self::KEY_EML:
-                $d = array(
-                    self::EML_ICS => false,
-                    self::EML_SKIP_EVS => false,
-                    self::EML_AMOD => true,
-                    self::EML_ADEL => true,
-                    self::EML_MREQ => false,
-                    self::EML_MCONF => false,
-                    self::EML_MCNCL => false,
-                    self::EML_VLD_TXT => "",
-                    self::EML_CNF_TXT => "",
-                    self::EML_ICS_TXT => "");
-                break;
-            case self::KEY_CLS:
-                $d = array(
-                    self::CLS_MAIN_ID => '-1',
-                    self::CLS_DEST_ID => '-1',
-
-                    self::CLS_XTM_SRC_ID => '-1',
-                    self::CLS_XTM_DST_ID => '-1',
-                    self::CLS_XTM_PUSH_REC => true,
-                    self::CLS_XTM_REQ_CAT => false,
-                    self::CLS_XTM_AUTO_FIX => false,
-
-                    self::CLS_TMM_DST_ID => '-1',
-                    self::CLS_TMM_MORE_CALS => [],
-                    self::CLS_TMM_SUBSCRIPTIONS => [],
-                    self::CLS_TMM_SUBSCRIPTIONS_SYNC => '0',
-
-                    self::CLS_PREP_TIME => "0",
-                    self::CLS_BUFFER_BEFORE => 0,
-                    self::CLS_BUFFER_AFTER => 0,
-                    self::CLS_ON_CANCEL => 'mark',
-                    self::CLS_ALL_DAY_BLOCK => false,
-                    self::CLS_TITLE_TEMPLATE => "",
-
-                    self::CLS_PRIVATE_PAGE => false,
-                    self::CLS_TS_MODE => self::CLS_TS_MODE_TEMPLATE);
-                break;
-            case self::KEY_PSN:
-                $d = array(
-                    self::PSN_FORM_TITLE => "",
-                    self::PSN_NWEEKS => "2",
-                    self::PSN_EMPTY => true,
-                    self::PSN_FNED => false, // start at first not empty day
-                    self::PSN_WEEKEND => false,
-                    self::PSN_TIME2 => false,
-                    self::PSN_END_TIME => false,
-                    self::PSN_HIDE_TEL => false,
-                    self::PSN_SHOW_TZ => false,
-                    self::PSN_GDPR => "",
-                    self::PSN_GDPR_NO_CHB => false,
-                    self::PSN_PAGE_TITLE => "",
-                    self::PSN_PAGE_SUB_TITLE => "",
-                    self::PSN_META_NO_INDEX => false,
-                    self::PSN_PAGE_STYLE => "",
-                    self::PSN_USE_NC_THEME => false);
-                break;
-            case self::KEY_MPS_COL:
-                $d = null;
-                break;
-            case self::KEY_MPS:
-                $d = array(
-                    self::CLS_MAIN_ID => '-1',
-                    self::CLS_DEST_ID => '-1',
-                    self::CLS_XTM_SRC_ID => '-1',
-                    self::CLS_XTM_DST_ID => '-1',
-                    self::CLS_TMM_DST_ID => '-1',
-                    self::CLS_TMM_MORE_CALS => [],
-                    self::CLS_TMM_SUBSCRIPTIONS => [],
-
-                    self::CLS_BUFFER_BEFORE => 0,
-                    self::CLS_BUFFER_AFTER => 0,
-
-                    self::CLS_PRIVATE_PAGE => false,
-                    self::CLS_TS_MODE => self::CLS_TS_MODE_TEMPLATE,
-
-                    self::ORG_NAME => "",
-                    self::ORG_EMAIL => "",
-                    self::ORG_ADDR => "",
-                    self::ORG_PHONE => "",
-
-                    self::ORG_CONFIRMED_RDR_URL => "",
-                    self::ORG_CONFIRMED_RDR_ID => false,
-                    self::ORG_CONFIRMED_RDR_DATA => false,
-
-                    self::PSN_FORM_TITLE => "");
-                break;
-            case self::KEY_PAGES:
-                $d = array('p0' => self::PAGES_VAL_DEF);
-                break;
-            case self::KEY_TALK:
-                $d = array(
-                    self::TALK_ENABLED => false,
-                    self::TALK_DEL_ROOM => false,
-                    self::TALK_EMAIL_TXT => "",
-                    self::TALK_LOBBY => false,
-                    self::TALK_PASSWORD => false,
-                    // 0=Name+DT, 1=DT+Name, 2=Name Only
-                    self::TALK_NAME_FORMAT => 0,
-                    self::TALK_FORM_ENABLED => false,
-                    self::TALK_FORM_LABEL => "",
-                    self::TALK_FORM_PLACEHOLDER => "",
-                    self::TALK_FORM_REAL_TXT => "",
-                    self::TALK_FORM_VIRTUAL_TXT => "",
-                    self::TALK_FORM_TYPE_CHANGE_TXT => "");
-                break;
-            case self::KEY_DIR:
-            case self::KEY_TMPL_DATA:
-                $d = array();
-                break;
-            case self::KEY_TMPL_INFO:
-                $d = array('p0' => array(
-                    self::TMPL_TZ_NAME => "",
-                    self::TMPL_TZ_DATA => "")
-                );
-                break;
-            case self::KEY_REMINDERS:
-                $d = array(
-                    self::REMINDER_DATA => [
-                        [
-                            self::REMINDER_DATA_TIME => "0",
-                            self::REMINDER_DATA_ACTIONS => true
-                        ],
-                        [
-                            self::REMINDER_DATA_TIME => "0",
-                            self::REMINDER_DATA_ACTIONS => true
-                        ],
-                        [
-                            self::REMINDER_DATA_TIME => "0",
-                            self::REMINDER_DATA_ACTIONS => true
-                        ],
-                    ],
-                    self::REMINDER_SEND_ON_FRIDAY => false,
-                    self::REMINDER_MORE_TEXT => "");
-                break;
-            case self::KEY_DEBUGGING:
-                $d = array(
-                    self::DEBUGGING_LOG_REM_BLOCKER => false
-                );
-                break;
-            default:
-                $d = null;
-        }
-        return $d;
     }
 
     function getDefaultSettingsData(): array
@@ -1358,6 +1147,7 @@ class BackendUtils
             self::TALK_FORM_DEF_PLACEHOLDER => 'Select meeting type',
             self::TALK_FORM_DEF_REAL => 'In-person meeting',
             self::TALK_FORM_DEF_VIRTUAL => 'Online (audio/video)',
+            self::TALK_INTEGRATION_DISABLED => false,
 
             self::KEY_REMINDERS => [
                 self::REMINDER_DATA => [
@@ -1391,24 +1181,6 @@ class BackendUtils
             self::PSN_USE_NC_THEME => false,
             self::CLS_PRIVATE_PAGE => false,
         ];
-    }
-
-
-    private function loadSettingsFromDB($userId)
-    {
-        $qb = $this->db->getQueryBuilder();
-        $c = $qb->select('*')
-            ->from(self::PREF_TABLE_NAME)
-            ->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
-            ->execute();
-        $t = $c->fetch();
-        $c->closeCursor();
-
-        if ($t === false) {
-            $this->settings = [];
-        } else {
-            $this->settings = $t;
-        }
     }
 
     /**
@@ -1542,106 +1314,7 @@ class BackendUtils
         return $pageId[0] === 'd';
     }
 
-    function getTemplateData($pageId, $userId)
-    {
-        // TODO: inline/simplify
-        return $this->settings[self::KEY_TMPL_DATA];
-
-//        return $this->getUserSettings(self::KEY_TMPL_DATA, $userId)[$pageId] ?? array([], [], [], [], [], [], []);
-    }
-
-    function setTemplateData($pageId, $value, $userId)
-    {
-        $td = $this->getUserSettings(self::KEY_TMPL_DATA, $userId);
-        $td[$pageId] = json_decode($value, true) ?? array([], [], [], [], [], [], []);
-        $jv = json_encode($td);
-        if ($jv === false) {
-            return false;
-        } else {
-            return $this->setDBValue($userId, self::KEY_TMPL_DATA, $jv);
-        }
-    }
-
-    function clearSettingsCache()
-    {
-        $this->settings = null;
-    }
-
-    /**
-     * @param string $key
-     * @param string $userId
-     * @return array
-     */
-    function getUserSettings_old($key, $userId)
-    {
-
-        if ($this->settings === null) {
-            $this->loadSettingsFromDB($userId);
-        }
-
-        $pn = "";
-
-        $default = $this->getDefaultForKey($key);
-
-        if ($key === self::KEY_TMPL_DATA) {
-            return json_decode($this->settings[self::KEY_TMPL_DATA] ?? null, true) ?? $default;
-        } else {
-            if (strpos($key, self::KEY_MPS) === 0) {
-                $pn = substr($key, strlen(self::KEY_MPS));
-                $key = self::KEY_MPS_COL;
-                $default = $this->getDefaultForKey(self::KEY_MPS);
-            } else {
-                if ($key === self::KEY_TALK) {
-                    // Translate defaults
-                    $l10n = \OC::$server->getL10N($this->appName);
-                    $default[self::TALK_FORM_DEF_LABEL] = $l10n->t('Meeting Type');
-                    $default[self::TALK_FORM_DEF_PLACEHOLDER] = $l10n->t('Select meeting type');
-                    $default[self::TALK_FORM_DEF_REAL] = $l10n->t('In-person meeting');
-                    $default[self::TALK_FORM_DEF_VIRTUAL] = $l10n->t('Online (audio/video)');
-                } else {
-                    if ($key === self::KEY_FORM_INPUTS_JSON) {
-                        // this is a special case
-                        $sa = json_decode(($this->settings[$key] ?? null), true);
-                        if ($sa !== null) {
-                            return $sa;
-                        } else {
-                            return [];
-                        }
-                    } else {
-                        if ($key === self::KEY_FORM_INPUTS_HTML) {
-                            // this is a special case
-                            return [$this->settings[$key] ?? ''];
-                        } else {
-                            if ($key === self::KEY_TMPL_INFO) {
-                                return json_decode($this->settings[self::KEY_TMPL_INFO] ?? null, true) ?? $default;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        $sa = json_decode(($this->settings[$key] ?? null), true);
-        if (!empty($pn)) {
-            $sa = $sa[$pn] ?? null;
-        } // <- mps
-
-        if ($sa === null) {
-            return $default;
-        }
-
-        if ($default !== null) {
-            foreach ($default as $k => $v) {
-                if (!isset($sa[$k])) {
-                    $sa[$k] = $v;
-                }
-            }
-        }
-
-        return $sa;
-    }
-
-    function getUserSettings(string $key, string $userId): array
+    function getUserSettings(): array
     {
 
         if ($this->settings === null) {
@@ -1652,102 +1325,7 @@ class BackendUtils
         return $this->settings;
     }
 
-    // This is a temp work-around for multiple "template mode" pages, use this instead getUserSettings(BackendUtils::KEY_TMPL_INFO, $userId) until data is normalized.
-    function getTemplateInfo(string $userId, string $pageId): array
-    {
-        // TODO: inline/simplify
-
-        return $this->settings[self::KEY_TMPL_INFO];
-
-//        $templateInfo = $this->getUserSettings(BackendUtils::KEY_TMPL_INFO, $userId);
-//
-//        if (isset($templateInfo[self::TMPL_TZ_NAME]) || isset($templateInfo[self::TMPL_TZ_DATA])) {
-//            // we have old ( single page data ), fix/normalize...
-//            $newData = array(
-//                'old_info' => $templateInfo
-//            );
-//            // This is not perfect but since we only have one data, we just duplicate it for other pages
-//            $newData[$pageId] = $templateInfo;
-//            $this->setTemplateInfo($userId, null, $newData);
-//
-//            return $newData[$pageId];
-//
-//        } else {
-//            if (!isset($templateInfo[$pageId])) {
-//                // This is not perfect, but we use 'old_info' and if that does not exist just use default
-//                if (isset($templateInfo['old_info'])) {
-//                    return $templateInfo['old_info'];
-//                } else {
-//                    // 'p0' has defaults
-//                    return $this->getDefaultForKey(BackendUtils::KEY_TMPL_INFO)['p0'];
-//                }
-//            }
-//        }
-//        return $templateInfo[$pageId];
-    }
-
-    /**
-     * @param string $userId
-     * @param string|null $pageId
-     * @param array $value
-     * @return bool
-     */
-    function setTemplateInfo($userId, $pageId, $value)
-    {
-
-        if ($pageId !== null) {
-            $td = $this->getUserSettings(self::KEY_TMPL_INFO, $userId);
-
-            if (isset($templateInfo[self::TMPL_TZ_NAME]) || isset($templateInfo[self::TMPL_TZ_DATA])) {
-                // we have old ( single page data ), fix/normalize...
-                $td = array(
-                    'old_info' => $td
-                );
-            }
-            $td[$pageId] = $value;
-        } else {
-            // $pageId can be null when the multipage fix is first applied and in that case value contains data with page Id(s)
-            $td = $value;
-        }
-        $jv = json_encode($td);
-        if ($jv === false) {
-            return false;
-        } else {
-            return $this->setDBValue($userId, self::KEY_TMPL_INFO, $jv);
-        }
-    }
-
-
-    /**
-     * @param string $userId
-     * @param string $key
-     * @param string|null $value
-     */
-    function setDBValue($userId, $key, $value)
-    {
-        try {
-            $qb = $this->db->getQueryBuilder();
-            $r = $qb->update(self::PREF_TABLE_NAME)
-                ->set($key, $qb->createNamedParameter($value))
-                ->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
-                ->execute();
-            if ($r === 0) {
-                $qb = $this->db->getQueryBuilder();
-                $qb->insert(self::PREF_TABLE_NAME)
-                    ->setValue('user_id', $qb->createNamedParameter($userId))
-                    ->setValue($key, $qb->createNamedParameter($value))
-                    ->execute();
-            }
-            // set cached
-            $this->settings[$key] = $value;
-            return true;
-        } catch (\Exception $e) {
-            $this->logger->error($e);
-            return false;
-        }
-    }
-
-    function dbUpsert2(string $userId, string $pageId, array $columns)
+    function dbUpsert2(string $userId, string $pageId, array $columns): bool
     {
         try {
             $tableName = self::PREF_TABLE_V2_NAME;
@@ -1849,25 +1427,6 @@ class BackendUtils
         return $out;
     }
 
-
-    /**
-     * @param string $userId
-     * @param string $page
-     * @param array|null $value
-     * @return bool
-     */
-    function setDBMpsValue($userId, $page, $value)
-    {
-        $mps = $this->getUserSettings(self::KEY_MPS_COL, $userId) ?? [];
-        $mps[$page] = $value;
-        $v = json_encode($mps);
-        if ($v === false) {
-            return false;
-        }
-        $this->setDBValue($userId, self::KEY_MPS_COL, $v);
-        return true;
-    }
-
     function setUserSettingsV2(string $userId, string $pageId, string $key, $value): array
     {
 
@@ -1893,7 +1452,10 @@ class BackendUtils
                     $qb->createNamedParameter($pageId)))
                 ->executeStatement();
         } catch (\Throwable $e) {
-            $this->logger->error($e->getMessage(), ['app' => $this->appName, 'exception' => $e]);
+            $this->logger->error($e->getMessage(), [
+                'app' => Application::APP_ID,
+                'exception' => $e
+            ]);
             return [500, ''];
         }
         if ($r !== 1) {
@@ -1947,54 +1509,6 @@ class BackendUtils
 
 
     /**
-     * @param string $key
-     * @param string $value_str JSON String
-     * @param array $default_or_pgs this is value when $key===self::KEY_PAGES
-     * @param string $userId
-     * @param string $appName
-     * @return bool
-     */
-    function setUserSettings($key, $value_str, $default_or_pgs, $userId, $appName)
-    {
-        if ($key === self::KEY_PAGES) {
-            // already filtered array @see StateController:set_pages
-            $sa = $default_or_pgs;
-        } elseif ($key === self::KEY_REMINDERS) {
-            // already filtered or null
-            $this->setDBValue($userId, $key, $value_str);
-            return true;
-        } else {
-            $va = json_decode($value_str, true);
-            if ($va === null) {
-                return false;
-            }
-            $sa = [];
-            foreach ($default_or_pgs as $k => $v) {
-                if (isset($va[$k]) && gettype($va[$k]) === gettype($v)) {
-                    $sa[$k] = $va[$k];
-                } else {
-                    $sa[$k] = $v;
-                }
-            }
-        }
-
-        if (strpos($key, self::KEY_MPS) === 0) {
-            return $this->setDBMpsValue(
-                $userId, substr($key, strlen(self::KEY_MPS)), $sa);
-        }
-
-        $js = json_encode($sa);
-        if ($js === false) {
-            return false;
-        }
-
-
-        $this->setDBValue($userId, $key, $js);
-
-        return true;
-    }
-
-    /**
      * For simple mode:
      *  Main = CLS_MAIN_ID
      *  Other = CLS_DEST_ID
@@ -2003,34 +1517,24 @@ class BackendUtils
      *  Main = XTM_DST_ID (destination calendar)
      *  Other = XTM_SRC_ID (source calendar)
      *
-     * @param string $userId
-     * @param string $pageId
      * @param IBackendConnector|null $bc checks backend if provided
      * @param string|null $otherCal get the ID of the other calendar "-1"=not found
      * @return string calendar Id or "-1" = no main cal
      */
-    function getMainCalId($userId, $pageId, $bc, &$otherCal = null)
+    function getMainCalId(string $userId, IBackendConnector|null $bc, string &$otherCal = null): string
     {
 
-        // TODO: optimize for settings v2...
-
-        if ($pageId === 'p0') {
-            // main calendar is provider
-            $csProvider = $this->getUserSettings(self::KEY_CLS, $userId);
-        } else {
-            // more_pages_ holds $dst/$src cals
-            $csProvider = $this->getUserSettings(self::KEY_MPS . $pageId, $userId);
-        }
+        $settings = $this->getUserSettings();
 
         // What mode are we in ??
-        $ts_mode = $csProvider[self::CLS_TS_MODE];
+        $ts_mode = $settings[self::CLS_TS_MODE];
         if ($ts_mode === self::CLS_TS_MODE_TEMPLATE) {
-            $dst = $csProvider[self::CLS_TMM_DST_ID];
+            $dst = $settings[self::CLS_TMM_DST_ID];
             return ($bc !== null && $bc->getCalendarById($dst, $userId) === null) ? '-1' : $dst;
         } else {
             if ($ts_mode === self::CLS_TS_MODE_EXTERNAL) {
-                $dst = $csProvider[self::CLS_XTM_DST_ID];
-                $src = $csProvider[self::CLS_XTM_SRC_ID];
+                $dst = $settings[self::CLS_XTM_DST_ID];
+                $src = $settings[self::CLS_XTM_SRC_ID];
                 // External mode - main calendar is destination calendar
                 if ($src === "-1" || $dst === "-1" || $src === $dst) {
                     if (isset($otherCal)) {
@@ -2046,29 +1550,26 @@ class BackendUtils
             } else {
                 // Manual $ts_mode==="0"
                 if (isset($otherCal)) {
-                    $dst = $csProvider[self::CLS_DEST_ID];
+                    $dst = $settings[self::CLS_DEST_ID];
                     $otherCal = ($bc !== null && $bc->getCalendarById($dst, $userId) === null) ? '-1' : $dst;
                 }
-                $src = $csProvider[self::CLS_MAIN_ID];
+                $src = $settings[self::CLS_MAIN_ID];
                 return ($bc !== null && $bc->getCalendarById($src, $userId) === null) ? '-1' : $src;
             }
         }
     }
 
     /**
-     * @param string $userId
-     * @param string $pageId
-     * @param string $appName
      * @param string $tz_data_str Can be VTIMEZONE data, 'UTC'
      * @param string $cr_date 20200414T073008Z must be UTC (ends with Z),
      * @param string $title title is used when the appointment is being reset
      * @return string[] ['1_before_uid'=>'string...','2_before_dts'=>'string...','3_before_dte'=>'string...','4_last'=>'string...'] or ['err'=>'Error text...']
      */
-    function makeAppointmentParts($userId, $pageId, $appName, $tz_data_str, $cr_date, $title = "")
+    function makeAppointmentParts(string $userId, string $tz_data_str, string $cr_date, string $title = ""): array
     {
 
-        $l10n = \OC::$server->getL10N($appName);
-        $iUser = \OC::$server->getUserManager()->get($userId);
+        $l10n = $this->l10n;
+        $iUser = \OC::$server->get(IUserManager::class)->get($userId);
         if ($iUser === null) {
             return ['err' => 'Bad user Id.'];
         }
@@ -2088,24 +1589,10 @@ class BackendUtils
             $tz_Z = "Z";
         }
 
-        // TODO: simplify for settings v2 ...
-        $org = $this->getUserSettings(self::KEY_ORG, $userId);
-        if ($pageId === 'p0') {
-            $org_name = $org[BackendUtils::ORG_NAME];
-            $addr = $org[BackendUtils::ORG_ADDR];
-        } else {
-            $mps = $this->getUserSettings(
-                BackendUtils::KEY_MPS . $pageId, $userId);
-            $org_name = !empty($mps[BackendUtils::ORG_NAME])
-                ? $mps[BackendUtils::ORG_NAME]
-                : $org[BackendUtils::ORG_NAME];
-            $addr = !empty($mps[BackendUtils::ORG_ADDR])
-                ? $mps[BackendUtils::ORG_ADDR]
-                : $org[BackendUtils::ORG_ADDR];
-        }
-
-        // email is not per page
-        $email = $org[self::ORG_EMAIL];
+        $settings = $this->getUserSettings();
+        $org_name = $settings[BackendUtils::ORG_NAME];
+        $addr = $settings[BackendUtils::ORG_ADDR];
+        $email = $settings[self::ORG_EMAIL];
 
         $name = trim($iUser->getDisplayName());
         if (empty($name)) {
@@ -2119,8 +1606,6 @@ class BackendUtils
             return ['err' => $l10n->t("Your email address is required for this operation.")];
         }
         if (!empty($addr)) {
-//			return ['err' => $l10n->t("A location, address or URL is required for this operation. Check User/Organization settings.")];
-
 //        ESCAPED-CHAR = ("\\" / "\;" / "\," / "\N" / "\n")
 //        \\ encodes \ \N or \n encodes newline \; encodes ; \, encodes ,
             $addr = str_replace(array("\\", ";", ",", "\r\n", "\r", "\n"), array('\\\\', '\;', '\,', ' \n', ' \n', ' \n'), $addr);
@@ -2131,11 +1616,10 @@ class BackendUtils
         }
 
         if (empty($title)) {
-            $summary = \OC::$server->getL10N($appName)->t("Available");
+            $summary = $this->l10n->t("Available");
         } else {
             $summary = $title;
         }
-
 
         return [
             '1_before_uid' => "BEGIN:VCALENDAR\r\n" .
@@ -2160,7 +1644,7 @@ class BackendUtils
         ];
     }
 
-    private function chunk_split_unicode($str, $l = 76, $e = "\r\n")
+    private function chunk_split_unicode($str, $l = 76, $e = "\r\n"): string
     {
         $tmp = array_chunk(
             preg_split("//u", $str, -1, PREG_SPLIT_NO_EMPTY), $l);
@@ -2175,13 +1659,13 @@ class BackendUtils
      * Try to get calendar timezone if it is not available fall back to getUserTimezone
      *
      * @param string $userId
-     * @param \OCP\IConfig $config
+     * @param IConfig $config
      * @param array|null $cal
      * @return \DateTimeZone
      *
      * @see getUserTimezone
      */
-    function getCalendarTimezone(string $userId, \OCP\IConfig $config, array $cal = null): \DateTimeZone
+    function getCalendarTimezone(string $userId, IConfig $config, array $cal = null): \DateTimeZone
     {
 
         // TODO: Double check if the following is the Calendar App order (#1 and #2 might be reversed):
@@ -2223,19 +1707,14 @@ class BackendUtils
         return $tz;
     }
 
-    /**
-     * @param $userId
-     * @param \OCP\IConfig $config
-     * @return \DateTimeZone
-     */
-    function getUserTimezone($userId, $config)
+    function getUserTimezone(string $userId, IConfig $config): \DateTimeZone
     {
         $tz_name = $config->getUserValue($userId, 'calendar', 'timezone');
-        if (empty($tz_name) || strpos($tz_name, 'auto') !== false) {
+        if (empty($tz_name) || str_contains($tz_name, 'auto')) {
             // Try Nextcloud default timezone
             $tz_name = $config->getUserValue($userId, 'core', 'timezone');
-            if (empty($tz_name) || strpos($tz_name, 'auto') !== false) {
-                return \OC::$server->getDateTimeZone()->getTimeZone();
+            if (empty($tz_name) || str_contains($tz_name, 'auto')) {
+                return \OC::$server->get(IDateTimeZone::class);
             }
         }
         try {
@@ -2249,18 +1728,15 @@ class BackendUtils
     }
 
     /**
-     * @param \DateTimeImmutable $date
      * @param string $tzi Timezone info [UF][+-]\d{4} Ex: U+0300 @see dataSetAttendee() or [UF](valid timezone name) Ex: UAmerica/New_York
      * @param int $short_dt
      *      0 = long format
      *      1 = short format (for email subject)
-     * @return string
-     * @noinspection PhpDocMissingThrowsInspection
      */
-    function getDateTimeString($date, $tzi, $short_dt = 0)
+    function getDateTimeString(\DateTimeImmutable $date, string $tzi, int $short_dt = 0): string
     {
 
-        $l10N = \OC::$server->getL10N($this->appName);
+        $l10N = $this->l10n;
         if ($tzi[0] === "F") {
             $d = $date->format('Ymd\THis');
             if ($short_dt === 0) {
@@ -2300,13 +1776,7 @@ class BackendUtils
         return $date_time;
     }
 
-    /**
-     * @param string $data
-     * @param string $key
-     * @param string $iv special case
-     * @return string
-     */
-    function encrypt(string $data, string $key, $iv = ''): string
+    function encrypt(string $data, string $key, string $iv = ''): string
     {
         if ($iv === '') {
             $iv = $_iv = openssl_random_pseudo_bytes(
@@ -2326,13 +1796,7 @@ class BackendUtils
             : $_iv . $ciphertext_raw;
     }
 
-    /**
-     * @param string $data
-     * @param string $key
-     * @param string $iv
-     * @return string
-     */
-    function decrypt(string $data, string $key, $iv = ''): string
+    function decrypt(string $data, string $key, string $iv = ''): string
     {
         $s1 = $iv === '' ? base64_decode($data) : $data;
         if ($s1 === false || empty($key)) {
@@ -2352,76 +1816,17 @@ class BackendUtils
     }
 
 
-    /**
-     * @param string $token
-     * @param bool $embed
-     * @return string
-     */
-    function pubPrx($token, $embed)
+    function pubPrx(string $token, bool $embed): string
     {
         return $embed ? 'embed/' . $token . '/' : 'pub/' . $token . '/';
     }
 
 
-    function getPublicWebBase()
+    function getPublicWebBase(): string
     {
         // we need to detect if the server is configured to use '.../index.php/...'
         $defaultUrl = $this->urlGenerator->linkToDefaultPageUrl();
         return substr($defaultUrl, 0, strpos($defaultUrl, '/apps/') + 6) . Application::APP_ID;
-    }
-
-    /**
-     * @param string $token
-     * @param \OCP\IConfig $config
-     * @return string[]|null[] [useId,pageId] on success, [null,null]=not verified
-     * @throws \ErrorException
-     */
-    function verifyToken_old($token, $config)
-    {
-        if (empty($token) || strlen($token) > 256) {
-            return [null, null];
-        }
-        $token = str_replace("_", "/", $token);
-        $key = hex2bin($config->getAppValue($this->appName, 'hk'));
-        $iv = hex2bin($config->getAppValue($this->appName, 'tiv'));
-        if (empty($key) || empty($iv)) {
-            throw new \ErrorException("Can't find key");
-        }
-
-        $l = strlen($token);
-        if (($l & 3) !== 0) {
-            // not divisible by 4
-            $m = intval($token[$l - 1]);
-            $token = substr($token, 0, -($m === 1 ? 2 : 1));
-            $token .= str_repeat('=', $m);
-
-            $rc = base64_decode($token);
-            if ($rc === false) {
-                return [null, null];
-            }
-
-            $iv[0] = substr($rc, -1);
-            $raw = substr($rc, 0, -1);
-            $pageId = '';
-        } else {
-            $raw = base64_decode($token);
-            if ($raw === false) {
-                return [null, null];
-            }
-            $pageId = "p0";
-        }
-
-        $td = $this->decrypt($raw, $key, $iv);
-        if (strlen($td) > 4 && substr($td, 0, 4) === hash('adler32', substr($td, 4), true)) {
-            $u = substr($td, 4);
-            if ($pageId === '') {
-                return [substr($u, 0, -1), 'p' . ord(substr($u, -1))];
-            } else {
-                return [$u, $pageId];
-            }
-        } else {
-            return [null, null];
-        }
     }
 
     function verifyToken(string $token): array
@@ -2456,13 +1861,7 @@ class BackendUtils
     }
 
 
-    /**
-     * @param string $userId
-     * @param string $pageId (optional)
-     * @return string
-     * @throws \ErrorException
-     */
-    function getToken($userId, $pageId = "p0"): string|null
+    function getToken(string $userId, string $pageId = "p0"): string|null
     {
         if (empty($userId)) {
             return null;
@@ -2485,7 +1884,7 @@ class BackendUtils
 
     }
 
-    function transformCalInfo($c, $skipReadOnly = true)
+    function transformCalInfo(array $c, bool $skipReadOnly = true): array|null
     {
 
         if (isset($c['{http://nextcloud.com/ns}deleted-at'])) {
@@ -2535,7 +1934,7 @@ class BackendUtils
         return $realIds;
     }
 
-    function removeSubscriptionSync($subscriptionId)
+    function removeSubscriptionSync(string $subscriptionId): void
     {
         $this->logger->info("removeSubscriptionSync, subscriptionId: " . $subscriptionId);
         $qb = $this->db->getQueryBuilder();
@@ -2551,7 +1950,7 @@ class BackendUtils
 
     private function makeEvtTitle(string $userId, string $attendeeName, string $pageId, string $av): string
     {
-        $settings = $this->getUserSettings('', '');
+        $settings = $this->getUserSettings();
         if (isset($settings[self::CLS_TITLE_TEMPLATE]) && !empty($settings[self::CLS_TITLE_TEMPLATE])) {
 
             $tmpl = $settings[self::CLS_TITLE_TEMPLATE];
@@ -2577,6 +1976,8 @@ class BackendUtils
 
     public function getInlineStyle(string $userId, array $pps, IConfig $config): string
     {
+
+        // TODO: rename pps to settings
 
         $autoStyle = "";
 
@@ -2607,7 +2008,7 @@ class BackendUtils
                         /** @var IURLGenerator $urlGenerator */
                         $urlGenerator = \OC::$server->get(IURLGenerator::class);
                         $appointmentsBackgroundImage = "url('" . $urlGenerator->linkTo('theming', "/img/background/$themingBackground") . "');";
-                    } elseif ($themingBackground[0] === "#" || substr($themingBackground, 0, 3) === "rgb") {
+                    } elseif ($themingBackground[0] === "#" || str_starts_with($themingBackground, "rgb")) {
                         $appointmentsBackgroundImage = "none";
                         $appointmentsBackgroundColor = $themingBackground;
                     } else {

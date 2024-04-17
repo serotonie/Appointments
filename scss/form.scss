@@ -621,7 +621,7 @@ input.srgdev-ncfp-form-input:invalid,
 .srgdev-dpu-time-unit_tn:hover,
 .srgdev-dpu-time-unit:focus-visible,
 .srgdev-dpu-time-unit2:focus-visible,
-.srgdev-dpu-time-unit_tn:focus-visible{
+.srgdev-dpu-time-unit_tn:focus-visible {
   color: $color-primary;
   color: var(--color-primary);
   border-color: $color-border-dark;
@@ -712,6 +712,7 @@ input.srgdev-ncfp-form-input:invalid,
   }
   .srgdev-ncfp-form {
     border: none;
+    max-width: 24em;
   }
   .srgdev-appt-info-cont {
     border: none;
