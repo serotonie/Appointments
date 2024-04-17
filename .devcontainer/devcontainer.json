@@ -7,7 +7,10 @@
 	"features": {
 		"ghcr.io/devcontainers-contrib/features/node-asdf:0": {},
 		"ghcr.io/devcontainers-contrib/features/pnpm:2": {}
-	}
+	},
+
+	"postCreateCommand": "sudo apt-get update && sudo apt-get upgrade -y && sudo apt-get install -y python3",
+	"postStartCommand": "pnpm install && pnpm run build"
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
