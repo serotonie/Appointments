@@ -171,6 +171,14 @@ class BackendUtils
     // if true, Talk Setting are removed from the settings menu
     public const TALK_INTEGRATION_DISABLED = "talk_integration_disabled";
 
+    public const BBB_ENABLED = "bbbEnabled";
+    public const BBB_DEL_ROOM = "bbbDelete";
+    public const BBB_AUTO_DEL = "bbbAutoDelete";
+    public const BBB_PASSWORD = "bbbPassword";
+    public const BBB_FORM_ENABLED = "bbbFormEnabled";
+    // if true, BBB Setting are removed from the settings menu
+    public const BBB_INTEGRATION_DISABLED = "bbb_integration_disabled";
+
     public const REMINDER_DATA = "data";
     public const REMINDER_DATA_TIME = "seconds";
     public const REMINDER_DATA_ACTIONS = "actions";
@@ -189,6 +197,7 @@ class BackendUtils
     public const PAGE_LABEL = "label";
 
     private array|null $settings = null;
+    private ApptDocProp|null $apptDoc = null;
 
     private IConfig $config;
     private IDBConnection $db;
@@ -265,21 +274,10 @@ class BackendUtils
             return "2";
         }
 
-        // @see issues #120 and #116
-        // Should this be documented ???
-        // TODO: this should be $config->getAppValue(...)
-        $e_fix = $this->config->getUserValue($userId, Application::APP_ID, self::KEY_EMAIL_FIX);
+        $a = $evt->add('ATTENDEE', "mailto:" . $info['email']);
 
-        if ($e_fix === 'none') {
-            $a = $evt->add('ATTENDEE', "mailto:" . $info['email']);
-        } elseif ($e_fix === 'scheme') {
-            $a = $evt->add('ATTENDEE', "acct:" . $info['email']);
-        } else {
-            $a = $evt->add('ATTENDEE', "mailto:" . $info['email']);
-            $a['SCHEDULE-AGENT'] = "CLIENT";
-        }
-
-        $a['CN'] = $info['name'] . " " . $info['family'];
+        $a['SCHEDULE-AGENT'] = "CLIENT";
+        $a['CN'] = $info['name'];
         $a['PARTSTAT'] = "NEEDS-ACTION";
 
         $title = "";
@@ -320,11 +318,6 @@ class BackendUtils
         }
         $evt->DESCRIPTION->setValue($dsr);
 
-        if (!isset($evt->{self::X_DSR})) {
-            $evt->add(self::X_DSR);
-        }
-        $evt->{self::X_DSR}->setValue($dsr);
-
         if (!isset($evt->STATUS)) {
             $evt->add('STATUS');
         }
@@ -335,39 +328,58 @@ class BackendUtils
         }
         $evt->TRANSP->setValue("OPAQUE");
 
-        // Attendee's timezone info at the time of booking
-        if (!isset($evt->{self::TZI_PROP})) {
-            $evt->add(self::TZI_PROP);
-        }
-        $evt->{self::TZI_PROP}->setValue($info['tzi']);
-
-        // isset($info['talk_type_real']) === No need for Talk room
-
-        // Additional appointment info (XAD_PROP):
-        //  0: userId
-        //  1: _title
-        //  2: pageId
-        //  3: embed (uri)
-        //  4: reserved for Talk link @see $this->dataConfirmAttendee()
-        //      'd' === add self::TALK_FORM_REAL_TXT to description - no need for Talk room
-        //      '_' === check if Talk room is needed
-        //      'f' === finished
-        //  5: reserved for Talk pass @see $this->dataConfirmAttendee()
         if (!isset($evt->{self::XAD_PROP})) {
-            $evt->add(self::XAD_PROP);
+
+            // -----
+            $doc = $this->getApptDoc($evt);
+            $doc->attendeeTimezone = $info['tzi'] ?? 'UTC';
+            $doc->title = $title;
+            $doc->embed = $info['_embed'];
+            $doc->inPersonType = isset($info['type_override']);
+            // original description
+            $doc->description = $dsr;
+            // -----
+
+        } else { // TODO: remove soon
+            // legacy
+
+            if (!isset($evt->{self::X_DSR})) {
+                $evt->add(self::X_DSR);
+            }
+            $evt->{self::X_DSR}->setValue($dsr);
+
+            // Attendee's timezone info at the time of booking
+            if (!isset($evt->{self::TZI_PROP})) {
+                $evt->add(self::TZI_PROP);
+            }
+            $evt->{self::TZI_PROP}->setValue($info['tzi']);
+
+            // isset($info['talk_type_real']) === No need for Talk room
+
+            // Additional appointment info (XAD_PROP):
+            //  0: userId
+            //  1: _title
+            //  2: pageId
+            //  3: embed (uri)
+            //  4: reserved for Talk link @see $this->dataConfirmAttendee()
+            //      'd' === add self::TALK_FORM_REAL_TXT to description - no need for Talk room
+            //      '_' === check if Talk room is needed
+            //      'f' === finished
+            //  5: reserved for Talk pass @see $this->dataConfirmAttendee()
+            $evt->{self::XAD_PROP}->setValue($this->encrypt(
+                $userId . chr(31)
+                . $title . chr(31)
+                . $info['_page_id'] . chr(31)
+                . $info['_embed'] . chr(31)
+                // talk link, if isset($info['talk_type_real']) means no need for talk room, @see PageController->showFormPost()
+                . (isset($info['talk_type_real']) ? 'd' : '_') . chr(31)
+                . '_', // talk pass
+                $evt->UID));
         }
-        $evt->{self::XAD_PROP}->setValue($this->encrypt(
-            $userId . chr(31)
-            . $title . chr(31)
-            . $info['_page_id'] . chr(31)
-            . $info['_embed'] . chr(31)
-            // talk link, if isset($info['talk_type_real']) means no need for talk room, @see PageController->showFormPost()
-            . (isset($info['talk_type_real']) ? 'd' : '_') . chr(31)
-            . '_', // talk pass
-            $evt->UID));
 
         $this->setSEQ($evt);
 
+        // this will save the apptDoc as well
         $this->setApptHash($evt, $userId, $info['_page_id'], $uri);
 
         return $vo->serialize();
@@ -389,7 +401,53 @@ class BackendUtils
         /** @var \Sabre\VObject\Component\VEvent $evt */
         $evt = $vo->VEVENT;
 
-        if (isset($evt->{BackendUtils::XAD_PROP})) {
+        if (isset($evt->{ApptDocProp::PROP_NAME})) {
+
+            // @see BackendUtils->dataSetAttendee for more info
+            $apptDoc = $this->getApptDoc($evt);
+            if (empty($apptDoc->_evtUid)) {
+                // something went wrong
+                return $r;
+            }
+
+            $a = $this->getAttendee($evt);
+            if ($a === null) {
+                return $r;
+            }
+
+            $settings = $this->getUserSettings();
+            if ($noChanges) {
+                $r[0] = $this->getNameForType(!$apptDoc->inPersonType, $settings);
+                return $r;
+            }
+
+            if ($apptDoc->inPersonType) {
+                // switching from inPerson -> Virtual
+                $apptDoc->inPersonType = false;
+            } else {
+                // switching from Virtual -> inPerson
+
+                // checking both TALK and BBB just in-case
+                if ($apptDoc->talkToken !== '') {
+                    $ti = new TalkIntegration($settings, $this);
+                    $ti->deleteRoom($apptDoc->talkToken);
+                }
+                if ($apptDoc->bbbToken !== '') {
+                    $di = \OC::$server->get(BbbIntegration::class);
+                    $di->deleteRoom($apptDoc->bbbToken, $userId);
+                }
+                $apptDoc->inPersonType = true;
+            }
+
+            $new_type = $this->addEvtTalkInfo2($userId, $evt, $a);
+            $this->saveApptDoc($apptDoc, $evt);
+            $r[0] = $new_type;
+            $r[1] = $vo->serialize();
+
+        } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
+            // TODO: remove soon
+            // legacy
+
             // @see BackendUtils->dataSetAttendee for BackendUtils::XAD_PROP
             $xad = explode(chr(31), $this->decrypt(
                 $evt->{BackendUtils::XAD_PROP}->getValue(),
@@ -451,15 +509,14 @@ class BackendUtils
      * @return array [string|null, string|null, string|null]
      *                  null=error|""=already confirmed,
      *                  Localized DateTime string
-     *                  $pageId
      *                  $attendeeName
      */
-    function dataConfirmAttendee(string $data, string $userId): array
+    function dataConfirmAttendee(string $data, string $userId, string $pageId): array
     {
 
         $vo = $this->getAppointment($data, 'CONFIRMED');
         if ($vo === null) {
-            return [null, null, null, ""];
+            return [null, null, ""];
         }
 
         /** @var \Sabre\VObject\Component\VEvent $evt */
@@ -467,32 +524,36 @@ class BackendUtils
 
         $a = $this->getAttendee($evt);
         if ($a === null) {
-            return [null, null, null, ""];
+            return [null, null, ""];
         }
 
-        if (isset($evt->{BackendUtils::XAD_PROP})) {
+        if (isset($evt->{ApptDocProp::PROP_NAME})) {
+            $apptDoc = $this->getApptDoc($evt);
+
+            $dts = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $apptDoc->attendeeTimezone
+            );
+
+        } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
             // @see BackendUtils->dataSetAttendee for BackendUtils::XAD_PROP
             $xad = explode(chr(31), $this->decrypt(
                 $evt->{BackendUtils::XAD_PROP}->getValue(),
                 $evt->UID->getValue()));
-            if (count($xad) > 2) {
-                $pageId = $xad[2];
-            } else {
-                $pageId = 'p0';
-            }
-        } else {
-            return [null, null, null, ""];
-        }
 
-        $dts = $this->getDateTimeString(
-            $evt->DTSTART->getDateTime(),
-            $evt->{self::TZI_PROP}->getValue()
-        );
+            $dts = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $evt->{self::TZI_PROP}->getValue()
+            );
+
+        } else {
+            return [null, null, ""];
+        }
 
         $attendeeName = $a->parameters['CN']->getValue();
 
         if ($a->parameters['PARTSTAT']->getValue() === 'ACCEPTED') {
-            return ["", $dts, $pageId, $attendeeName];
+            return ["", $dts, $attendeeName];
         }
 
         $a->parameters['PARTSTAT']->setValue('ACCEPTED');
@@ -503,13 +564,19 @@ class BackendUtils
         $evt->SUMMARY->setValue("✔️ " . $this->makeEvtTitle($userId, $attendeeName, $pageId, $this->getAttendee($evt)->getValue()));
 
         //Talk link
-        $this->addEvtTalkInfo($userId, $xad, $evt, $a);
+        if (isset($evt->{ApptDocProp::PROP_NAME})) {
+            $this->addEvtTalkInfo2($userId, $evt, $a);
+        } else {
+            // legacy: remove soon
+            $this->addEvtTalkInfo($userId, $xad, $evt, $a);
+        }
 
         $this->setSEQ($evt);
 
-        $this->setApptHash($evt, $xad[0], $pageId);
+        // this will save the apptDoc as well
+        $this->setApptHash($evt, $userId, $pageId);
 
-        return [$vo->serialize(), $dts, $pageId, $attendeeName];
+        return [$vo->serialize(), $dts, $attendeeName];
     }
 
     /**
@@ -549,10 +616,18 @@ class BackendUtils
             }
         }
 
-        $ret[0] = $this->getDateTimeString(
-            $evt->DTSTART->getDateTime(),
-            $evt->{self::TZI_PROP}->getValue()
-        );
+        if (isset($evt->{ApptDocProp::PROP_NAME})) {
+            $apptDoc = $this->getApptDoc($evt);
+            $ret[0] = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $apptDoc->attendeeTimezone
+            );
+        } else {
+            $ret[0] = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $evt->{self::TZI_PROP}->getValue()
+            );
+        }
 
         // Attendee Name
         $ret[2] = $a->parameters['CN']->getValue();
@@ -627,6 +702,120 @@ class BackendUtils
         return $r;
     }
 
+    private function getNameForType(bool $isInPersonType, array $settings): string
+    {
+        if ($isInPersonType) {
+            if ($settings[self::TALK_ENABLED] === true) {
+                // Talk
+                $name = (!empty($settings[self::TALK_FORM_REAL_TXT])
+                    ? $settings[self::TALK_FORM_REAL_TXT]
+                    : $settings[self::TALK_FORM_DEF_REAL]);
+            } else {
+                // BBB
+                $name = $this->l10n->t('In-person meeting');
+            }
+        } else {
+            if ($settings[self::TALK_ENABLED] === true) {
+                // Talk
+                $name = (!empty($settings[self::TALK_FORM_VIRTUAL_TXT])
+                    ? $settings[self::TALK_FORM_VIRTUAL_TXT]
+                    : $settings[self::TALK_FORM_DEF_VIRTUAL]);
+            } else {
+                $name = $this->l10n->t('Online (audio/video)');
+            }
+        }
+        return htmlspecialchars($name, ENT_NOQUOTES);
+    }
+
+    /**
+     * @return string new appointment type virtual/in-person (from talk settings)
+     */
+    private function addEvtTalkInfo2(string $userId, \Sabre\VObject\Component\VEvent $evt, \Sabre\VObject\Property|null $attendee): string
+    {
+        $settings = $this->getUserSettings();
+        $doc = $this->getApptDoc($evt);
+
+        $r = $this->getNameForType($doc->inPersonType, $settings);;
+
+        // reset tokens and passes
+        $doc->talkToken = '';
+        $doc->talkPass = '';
+        $doc->bbbToken = '';
+        $doc->bbbPass = '';
+
+        if (!$attendee) {
+            return $r;
+        }
+
+        if ($doc->inPersonType === false) {
+
+            $attendeeName = $attendee->parameters['CN']->getValue();
+
+            if ($settings[self::TALK_ENABLED] === true) {
+
+                $ti = new TalkIntegration($settings, $this);
+                $token = $ti->createRoomForEvent(
+                    $attendeeName,
+                    $evt->DTSTART,
+                    $userId);
+                if (!empty($token)) {
+
+                    $l10n = $this->l10n;
+                    if ($token !== "-") {
+                        $pi = '';
+                        if (!str_contains($token, chr(31))) {
+                            // just token
+                            $doc->talkToken = $token;
+                        } else {
+                            // taken + pass
+                            list($doc->talkToken, $doc->talkPass) = explode(chr(31), $token);
+                            $pi = "\n" . $l10n->t("Guest password:") . " " . $doc->talkPass;
+                            $token = $doc->talkToken;
+                        }
+
+                        $this->updateDescription($evt, "\n\n" .
+                            $ti->getRoomURL($token) . $pi);
+
+                    } else {
+                        $this->updateDescription($evt, "\n\n" .
+                            $l10n->t("Talk integration error: check logs"));
+                    }
+                }
+            } elseif ($settings[self::BBB_ENABLED] === true) {
+
+                $bi = \OC::$server->get(BbbIntegration::class);
+                $roomData = $bi->createRoomForEvent($attendeeName,
+                    $evt->DTSTART,
+                    $userId,
+                    $settings[self::BBB_PASSWORD] === true
+                );
+                if ($roomData['error'] === 0) {
+                    $doc->bbbToken = $roomData['token'];
+                    $doc->bbbPass = $roomData['password'];
+
+                    $roomUrl = $bi->getRoomUrl($doc->bbbToken, $userId);
+                    $description = $this->l10n->t('Meeting link: %s', [$roomUrl]);
+                    if (!empty($doc->bbbPass)) {
+                        $description .= "\n" . $this->l10n->t('Guest Password: %s', [$doc->bbbPass]);
+                    }
+                    $this->updateDescription($evt, "\n\n" . $description);
+
+                } else {
+                    $this->updateDescription($evt, "\n\n" .
+                        $this->l10n->t("Video/audio integration error: check logs"));
+                }
+            }
+
+        } else {
+            $this->updateDescription($evt, "\n\n" . $r);
+        }
+        if (!isset($evt->LOCATION)) {
+            $evt->add('LOCATION');
+        }
+        $evt->LOCATION->setValue($r);
+        return $r;
+    }
+
     private function updateDescription(\Sabre\VObject\Component\VEvent $evt, string $addString): void
     {
         // just in-case
@@ -634,7 +823,11 @@ class BackendUtils
             $evt->add('DESCRIPTION');
         }
 
-        if (isset($evt->{self::X_DSR})) {
+        if (isset($evt->{ApptDocProp::PROP_NAME})) {
+            // we have original description
+            $apptDoc = $this->getApptDoc($evt);
+            $d = $apptDoc->description;
+        } elseif (isset($evt->{self::X_DSR})) {
             // we have original description
             $d = $evt->{self::X_DSR}->getValue();
         } else {
@@ -649,12 +842,12 @@ class BackendUtils
      *                  null=error|""=already canceled
      *                  Localized DateTime string
      */
-    function dataCancelAttendee(string $data): array
+    function dataCancelAttendee(string $data, string $userId, string $pageId): array
     {
 
         $vo = $this->getAppointment($data, '*');
         if ($vo === null) {
-            return [null, null, null];
+            return [null, null];
         }
 
         /** @var \Sabre\VObject\Component\VEvent $evt */
@@ -662,46 +855,41 @@ class BackendUtils
 
         if ($evt->STATUS->getValue() === 'TENTATIVE') {
             // Can not cancel tentative appointments
-            return [null, null, null];
+            return [null, null];
         }
 
         $a = $this->getAttendee($evt);
         if ($a === null) {
-            return [null, null, null];
+            return [null, null];
         }
 
-        if (isset($evt->{BackendUtils::XAD_PROP})) {
-            // @see BackendUtils->dataSetAttendee for BackendUtils::XAD_PROP
-            $xad = explode(chr(31), $this->decrypt(
-                $evt->{BackendUtils::XAD_PROP}->getValue(),
-                $evt->UID->getValue()));
-            if (count($xad) > 2) {
-                $pageId = $xad[2];
-            } else {
-                $pageId = 'p0';
-            }
+        if (isset($evt->{ApptDocProp::PROP_NAME})) {
+            $apptDoc = $this->getApptDoc($evt);
+            $dts = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $apptDoc->attendeeTimezone
+            );
         } else {
-            return [null, null, null];
+            $dts = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $evt->{self::TZI_PROP}->getValue()
+            );
         }
-
-        $dts = $this->getDateTimeString(
-            $evt->DTSTART->getDateTime(),
-            $evt->{self::TZI_PROP}->getValue()
-        );
 
         if ($a->parameters['PARTSTAT']->getValue() === 'DECLINED'
             || $evt->STATUS->getValue() === 'CANCELLED') {
             // Already cancelled
-            return ["", $dts, $pageId];
+            return ["", $dts];
         }
 
         $this->evtCancelAttendee($evt);
 
         $this->setSEQ($evt);
 
-        $this->setApptHash($evt, $xad[0], $pageId);
+        // this will save the apptDoc as well
+        $this->setApptHash($evt, $userId, $pageId);
 
-        return [$vo->serialize(), $dts, $pageId];
+        return [$vo->serialize(), $dts];
     }
 
     /**
@@ -779,19 +967,30 @@ class BackendUtils
         }
 
         $title = "";
-        $xad = explode(chr(31), $this->decrypt(
-            $evt->{BackendUtils::XAD_PROP}->getValue(),
-            $evt->UID->getValue()));
-
-        // @see dataSetAttendee() $xad=...
-        if (count($xad) > 1 && !empty($xad[1]) && $xad[1][0] === '_') {
-            $title = $xad[1];
+        $dts = "";
+        if (isset($evt->{ApptDocProp::PROP_NAME})) {
+            $apptDoc = $this->getApptDoc($evt);
+            if (!empty($apptDoc->title) && $apptDoc->title[0] === '_') {
+                $title = $apptDoc->title;
+            }
+            $dts = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $apptDoc->attendeeTimezone
+            );
+        } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
+            $xad = explode(chr(31), $this->decrypt(
+                $evt->{BackendUtils::XAD_PROP}->getValue(),
+                $evt->UID->getValue()));
+            if (count($xad) > 1 && !empty($xad[1]) && $xad[1][0] === '_') {
+                $title = $xad[1];
+            }
+            $dts = $this->getDateTimeString(
+                $evt->DTSTART->getDateTime(),
+                $evt->{self::TZI_PROP}->getValue()
+            );
         }
 
-        return [$this->getDateTimeString(
-            $evt->DTSTART->getDateTime(),
-            $evt->{self::TZI_PROP}->getValue()
-        ), $dt, $f, $title];
+        return [$dts, $dt, $f, $title];
     }
 
     function getAttendee(\Sabre\VObject\Component\VEvent|\Sabre\VObject\Property|null $evt): \Sabre\VObject\Property|null
@@ -824,10 +1023,10 @@ class BackendUtils
         return $r !== null ? $r : $ao;
     }
 
-    function getApptHash(string $uid): string|null
+    function getApptHashRow(string $uid): array|null
     {
         $query = $this->db->getQueryBuilder();
-        $query->select(['hash'])
+        $query->select(['hash', 'user_id', 'page_id', 'appt_doc'])
             ->from(self::HASH_TABLE_NAME)
             ->where($query->expr()->eq('uid', $query->createNamedParameter($uid)));
         $stmt = $query->execute();
@@ -836,12 +1035,21 @@ class BackendUtils
 
         if (!$row) {
             return null;
+        }
+        return $row;
+    }
+
+    function getApptHash(string $uid): string|null
+    {
+        $row = $this->getApptHashRow($uid);
+        if (!$row) {
+            return null;
         } else {
             return $row['hash'];
         }
     }
 
-    function setApptHash(\Sabre\VObject\Component\VEvent $evt, string $userId, string $pageId, $uri = null): void
+    function setApptHash(\Sabre\VObject\Component\VEvent $evt, string $userId, string $pageId, ?string $uri = null): void
     {
         if (!isset($evt->UID)) {
             $this->logger->error("can't set appt_hash, no UID");
@@ -881,6 +1089,13 @@ class BackendUtils
 
         $uid = $evt->UID->getValue();
 
+        // if we have a good apptDoc lets set the 'appt_doc' as well
+        $apptDocData = null;
+        if ($this->apptDoc && $this->apptDoc->_evtUid === $uid) {
+            $apptDocData = $this->apptDoc->toString();
+            $this->setAppDocHash($apptDocData, $evt);
+        }
+
         $query = $this->db->getQueryBuilder();
 
         $start_ts = $evt->DTSTART->getDateTime()->getTimestamp();
@@ -896,7 +1111,10 @@ class BackendUtils
                 'page_id' => $query->createNamedParameter($pageId),
             ];
             if ($uri !== null) {
-                $values['uri'] = $query->createNamedParameter($pageId);
+                $values['uri'] = $query->createNamedParameter($uri);
+            }
+            if ($apptDocData !== null) {
+                $values['appt_doc'] = $query->createNamedParameter($apptDocData);
             }
 
             $query->insert(self::HASH_TABLE_NAME)
@@ -912,6 +1130,9 @@ class BackendUtils
                 ->set('page_id', $query->createNamedParameter($pageId));
             if ($uri !== null) {
                 $query->set('uri', $query->createNamedParameter($uri));
+            }
+            if ($apptDocData !== null) {
+                $query->set('appt_doc', $query->createNamedParameter($apptDocData));
             }
 
             $query->where($query->expr()->eq('uid', $query->createNamedParameter($uid)))
@@ -1041,8 +1262,8 @@ class BackendUtils
             return null;
         }
 
-        if (!isset($evt->{self::TZI_PROP})) {
-            $this->logger->error("Missing " . self::TZI_PROP . " property");
+        if (!isset($evt->{ApptDocProp::PROP_NAME}) && !isset($evt->{self::TZI_PROP})) {
+            $this->logger->error("Missing " . ApptDocProp::PROP_NAME . ' or ' . self::TZI_PROP . " property");
             return null;
         }
 
@@ -1149,6 +1370,13 @@ class BackendUtils
             self::TALK_FORM_DEF_VIRTUAL => 'Online (audio/video)',
             self::TALK_INTEGRATION_DISABLED => false,
 
+            self::BBB_ENABLED => false,
+            self::BBB_DEL_ROOM => true,
+            self::BBB_AUTO_DEL => true,
+            self::BBB_PASSWORD => false,
+            self::BBB_FORM_ENABLED => false,
+            self::BBB_INTEGRATION_DISABLED => false,
+
             self::KEY_REMINDERS => [
                 self::REMINDER_DATA => [
                     [
@@ -1250,6 +1478,10 @@ class BackendUtils
                     // replace default
                     $this->settings[self::KEY_REMINDERS] = $reminders;
                 }
+            }
+
+            if ($this->settings[self::BBB_ENABLED] === true) {
+                $this->settings[self::BBB_ENABLED] = BbbIntegration::hasBBB();
             }
         }
 
@@ -1659,19 +1891,18 @@ class BackendUtils
      * Try to get calendar timezone if it is not available fall back to getUserTimezone
      *
      * @param string $userId
-     * @param IConfig $config
      * @param array|null $cal
      * @return \DateTimeZone
      *
      * @see getUserTimezone
      */
-    function getCalendarTimezone(string $userId, IConfig $config, array $cal = null): \DateTimeZone
+    function getCalendarTimezone(string $userId, array $cal = null): \DateTimeZone
     {
 
         // TODO: Double check if the following is the Calendar App order (#1 and #2 might be reversed):
-        // 1. $config->getUserValue($userId, 'calendar', 'timezone');
+        // 1. $this->config->getUserValue($userId, 'calendar', 'timezone');
         // 2. $cal['timezone']
-        // 3. $config->getUserValue($userId, 'core', 'timezone')
+        // 3. $this->config->getUserValue($userId, 'core', 'timezone')
         // 4. \OC::$server->getDateTimeZone()->getTimeZone();
 
         $err = "";
@@ -1702,19 +1933,19 @@ class BackendUtils
         }
         if ($tz === null) {
             $this->logger->notice("getCalendarTimezone fallback to getUserTimezone: " . $err);
-            return $this->getUserTimezone($userId, $config);
+            return $this->getUserTimezone($userId);
         }
         return $tz;
     }
 
-    function getUserTimezone(string $userId, IConfig $config): \DateTimeZone
+    function getUserTimezone(string $userId): \DateTimeZone
     {
-        $tz_name = $config->getUserValue($userId, 'calendar', 'timezone');
+        $tz_name = $this->config->getUserValue($userId, 'calendar', 'timezone');
         if (empty($tz_name) || str_contains($tz_name, 'auto')) {
             // Try Nextcloud default timezone
-            $tz_name = $config->getUserValue($userId, 'core', 'timezone');
+            $tz_name = $this->config->getUserValue($userId, 'core', 'timezone');
             if (empty($tz_name) || str_contains($tz_name, 'auto')) {
-                return \OC::$server->get(IDateTimeZone::class);
+                return \OC::$server->get(IDateTimeZone::class)->getTimeZone();
             }
         }
         try {
@@ -1735,7 +1966,6 @@ class BackendUtils
      */
     function getDateTimeString(\DateTimeImmutable $date, string $tzi, int $short_dt = 0): string
     {
-
         $l10N = $this->l10n;
         if ($tzi[0] === "F") {
             $d = $date->format('Ymd\THis');
@@ -1974,7 +2204,7 @@ class BackendUtils
         }
     }
 
-    public function getInlineStyle(string $userId, array $pps, IConfig $config): string
+    public function getInlineStyle(string $userId, array $pps): string
     {
 
         // TODO: rename pps to settings
@@ -1982,16 +2212,16 @@ class BackendUtils
         $autoStyle = "";
 
         if ($pps[BackendUtils::PSN_USE_NC_THEME]
-            && $config->getAppValue('theming', 'disable-user-theming', 'no') !== 'yes') {
+            && $this->config->getAppValue('theming', 'disable-user-theming', 'no') !== 'yes') {
 
             $appointmentsBackgroundImage = "var(--image-background-default)";
             $appointmentsBackgroundColor = "transparent";
 
             // use system-wide default background color if provided
-            $backgroundMime = $config->getAppValue('theming', 'backgroundMime');
+            $backgroundMime = $this->config->getAppValue('theming', 'backgroundMime');
             if ($backgroundMime === 'backgroundColor') {
                 $appointmentsBackgroundImage = "none";
-                $appointmentsBackgroundColor = $config->getAppValue('theming', 'color');
+                $appointmentsBackgroundColor = $this->config->getAppValue('theming', 'color');
             }
 
             try {
@@ -1999,10 +2229,10 @@ class BackendUtils
                 $appManager = \OC::$server->get(\OCP\App\IAppManager::class);
                 if ($appManager->isEnabledForUser('theming', $userId)) {
 
-                    $themingBackground = $config->getUserValue($userId, 'theming', 'background', 'default');
+                    $themingBackground = $this->config->getUserValue($userId, 'theming', 'background', 'default');
                     if ($themingBackground === 'default') {
                         // nc26
-                        $themingBackground = $config->getUserValue($userId, 'theming', 'background_image', 'default');
+                        $themingBackground = $this->config->getUserValue($userId, 'theming', 'background_image', 'default');
                     }
                     if (isset(\OCA\Theming\Service\BackgroundService::SHIPPED_BACKGROUNDS[$themingBackground])) {
                         /** @var IURLGenerator $urlGenerator */
@@ -2013,7 +2243,7 @@ class BackendUtils
                         $appointmentsBackgroundColor = $themingBackground;
                     } else {
                         // nc26
-                        $themingBackground = $config->getUserValue($userId, 'theming', 'background_color');
+                        $themingBackground = $this->config->getUserValue($userId, 'theming', 'background_color');
                         if (!empty($themingBackground)) {
                             $appointmentsBackgroundImage = "none";
                             $appointmentsBackgroundColor = $themingBackground;
@@ -2033,5 +2263,58 @@ class BackendUtils
         return $autoStyle . $pps[BackendUtils::PSN_PAGE_STYLE];
     }
 
+    public function getApptDoc(\Sabre\VObject\Component\VEvent $evt): ApptDocProp
+    {
+        if ($this->apptDoc === null) {
+            $this->apptDoc = new ApptDocProp();
+        }
+        $evtUid = $evt->UID->getValue();
+        if ($this->apptDoc->_evtUid === $evtUid) {
+            return $this->apptDoc;
+        }
+        if (!isset($evt->{ApptDocProp::PROP_NAME})) {
+            $this->apptDoc->reset();
+            $this->apptDoc->_evtUid = $evtUid;
+            return $this->apptDoc;
+        }
+
+        $row = $this->getApptHashRow($evt->UID->getValue());
+        if (!$row || !isset($row['appt_doc'])) {
+            $this->apptDoc->reset();
+            $this->logger->error('can not find appt_doc for ' . $evtUid);
+        } else {
+            $this->apptDoc->setFromString(substr($row['appt_doc'], 8), $evtUid);
+        }
+        return $this->apptDoc;
+    }
+
+    private function setAppDocHash(string &$docData, \Sabre\VObject\Component\VEvent $evt): void
+    {
+        $hash = hash('adler32', random_bytes(16));
+        if (!isset($evt->{ApptDocProp::PROP_NAME})) {
+            $evt->add(ApptDocProp::PROP_NAME);
+        }
+        $evt->{ApptDocProp::PROP_NAME}->setValue($hash);
+        $docData = $hash . $docData;
+    }
+
+    public function saveApptDoc(ApptDocProp $doc, \Sabre\VObject\Component\VEvent $evt): bool
+    {
+        $docData = $doc->toString();
+        $this->setAppDocHash($docData, $evt);
+        $evtUid = $evt->UID->getValue();
+        try {
+            $query = $this->db->getQueryBuilder();
+            $query->update(self::HASH_TABLE_NAME)
+                ->set('appt_doc', $query->createNamedParameter($docData))
+                ->where($query->expr()->eq(
+                    'uid', $query->createNamedParameter($evtUid)))
+                ->execute();
+        } catch (\Throwable $e) {
+            $this->logger->error('saveApptDoc failed for ' . $evtUid . ': ' . $e->getMessage());
+            return false;
+        }
+        return true;
+    }
 }
 

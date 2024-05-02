@@ -8,7 +8,9 @@ namespace OCA\Appointments\Controller;
 use OCA\Appointments\AppInfo\Application;
 use OCA\Appointments\Backend\BackendManager;
 use OCA\Appointments\Backend\BackendUtils;
+use OCA\Appointments\Backend\BbbIntegration;
 use OCA\Appointments\Backend\IBackendConnector;
+use OCA\Appointments\Backend\TalkIntegration;
 use OCA\Appointments\SendDataResponse;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
@@ -133,7 +135,7 @@ class StateController extends Controller
                     $this->logger->warning('createPage returned ' . $count . ' , but expected 1');
                     $r->setStatus(Http::STATUS_ACCEPTED);
                     $r->setData(json_encode([
-                        "message" => $this->l->t("CreatePage warning. Check logs.")
+                        "message" => $this->l->t("Create Page warning. Check logs.")
                     ]));
                 } else {
                     $r->setStatus(Http::STATUS_OK);
@@ -175,7 +177,7 @@ class StateController extends Controller
                     $this->logger->warning('deletePage returned ' . $count . ' , but expected 1');
                     $r->setStatus(Http::STATUS_ACCEPTED);
                     $r->setData(json_encode([
-                        "message" => $this->l->t("DeletePage warning. Check logs.")
+                        "message" => $this->l->t("Delete Page warning. Check logs.")
                     ]));
                 } else {
                     $r->setStatus(Http::STATUS_OK);
@@ -243,7 +245,10 @@ class StateController extends Controller
                         $settings[BackendUtils::REMINDER_LANG] = $this->config->getSystemValue('default_language', 'en');
 
                         // readonly Talk prop
-                        $settings[BackendUtils::TALK_INTEGRATION_DISABLED] = $this->config->getAppValue(Application::APP_ID, BackendUtils::TALK_INTEGRATION_DISABLED, 'no') === 'yes';
+                        $settings[BackendUtils::TALK_INTEGRATION_DISABLED] = $this->config->getAppValue(Application::APP_ID, BackendUtils::TALK_INTEGRATION_DISABLED, 'no') === 'yes' || !TalkIntegration::canTalk();
+
+                        // readonly BBB prop
+                        $settings[BackendUtils::BBB_INTEGRATION_DISABLED] = $this->config->getAppValue(Application::APP_ID, BackendUtils::BBB_INTEGRATION_DISABLED, 'no') === 'yes' || !\OC::$server->get(BbbIntegration::class)->canBBB();
 
                         $r->setData(json_encode([
                             'settings' => $settings,
@@ -255,7 +260,7 @@ class StateController extends Controller
                     break;
                 case 'get_tz':
                     $calId = $this->request->getParam("calId", "-1");
-                    $tz = $this->utils->getCalendarTimezone($this->userId, $this->config, $this->bc->getCalendarById($calId, $this->userId));
+                    $tz = $this->utils->getCalendarTimezone($this->userId, $this->bc->getCalendarById($calId, $this->userId));
                     $r->setData($tz->getName());
                     $r->setStatus(200);
                     break;
@@ -328,7 +333,7 @@ class StateController extends Controller
                 if ($count !== 1) {
                     $this->logger->warning('deletePage returned ' . $count . ' , but expected 1');
                     return [Http::STATUS_ACCEPTED, json_encode([
-                        "message" => $this->l->t("DeletePage warning. Check logs.")
+                        "message" => $this->l->t("Delete Page warning. Check logs.")
                     ])];
                 } else {
                     return [Http::STATUS_OK, ''];
@@ -555,6 +560,32 @@ class StateController extends Controller
                 return $this->utils->setUserSettingsV2($this->userId, $pageId, BackendUtils::KEY_FORM_INPUTS_HTML, $inputsHtml);
             },
 
+            BackendUtils::TALK_ENABLED => function (&$value, $pageId, $key) {
+                if ($value === false) {
+                    // nothing to do
+                    return [Http::STATUS_OK, ''];
+                }
+                if (!TalkIntegration::canTalk()) {
+                    $value = false;
+                    return [Http::STATUS_OK, ''];
+                }
+                // ensure that BBB is unset
+                return $this->utils->setUserSettingsV2($this->userId, $pageId, BackendUtils::BBB_ENABLED, false);
+            },
+
+            BackendUtils::BBB_ENABLED => function (&$value, $pageId, $key) {
+                if ($value === false) {
+                    // nothing to do
+                    return [Http::STATUS_OK, ''];
+                }
+                if (!\OC::$server->get(BbbIntegration::class)->canBBB()) {
+                    $value = false;
+                    return [Http::STATUS_OK, ''];
+                }
+                // ensure that TALK is unset
+                return $this->utils->setUserSettingsV2($this->userId, $pageId, BackendUtils::TALK_ENABLED, false);
+            },
+
             default => null,
         };
     }
@@ -777,7 +808,7 @@ class StateController extends Controller
             return $r;
         }
 
-        $utz = $this->utils->getCalendarTimezone($this->userId, $this->config, $this->bc->getCalendarById($cal_id, $this->userId));
+        $utz = $this->utils->getCalendarTimezone($this->userId, $this->bc->getCalendarById($cal_id, $this->userId));
         try {
             $t_start = \DateTime::createFromFormat(
                 'j-m-Y H:i:s', $t . ' 00:00:00', $utz);
@@ -836,7 +867,7 @@ class StateController extends Controller
         }
 
         // Because of floating timezones...
-        $utz = $this->utils->getUserTimezone($this->userId, $this->config);
+        $utz = $this->utils->getUserTimezone($this->userId);
         try {
             if ($jo->before === 1) {
                 $rs = 'yesterday';

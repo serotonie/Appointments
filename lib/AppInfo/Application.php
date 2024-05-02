@@ -17,11 +17,13 @@ class Application extends App implements IBootstrap
 
     const APP_ID = 'appointments';
 
-    public function __construct() {
+    public function __construct()
+    {
         parent::__construct(self::APP_ID);
     }
 
-    public function register(IRegistrationContext $context): void {
+    public function register(IRegistrationContext $context): void
+    {
         $context->registerEventListener(CalendarObjectUpdatedEvent::class, DavListener::class);
         $context->registerEventListener(CalendarObjectMovedToTrashEvent::class, DavListener::class);
         $context->registerEventListener(SubscriptionDeletedEvent::class, DavListener::class);
@@ -32,6 +34,19 @@ class Application extends App implements IBootstrap
         $context->registerMiddleware('ApptRemoveScriptsMiddleware');
     }
 
-    public function boot(IBootContext $context): void {
+    public function boot(IBootContext $context): void
+    {
+//        $appContainer = $context->getAppContainer();
+//        $serverContainer = $context->getServerContainer();
+//
+//        /** @var IEventDispatcher $eventDispatcher */
+//        $eventDispatcher = $serverContainer->get(IEventDispatcher::class);
+//        // prevent default iMip plugin from sending emails for our appointments
+//        $eventDispatcher->addListener('OCA\DAV\Connector\Sabre::addPlugin', static function (SabrePluginEvent $event) use ($appContainer) {
+//            if ($event->getServer() === null) {
+//                return;
+//            }
+//            $event->getServer()->addPlugin($appContainer->get(IMipPlugin::class));
+//        });
     }
 }
