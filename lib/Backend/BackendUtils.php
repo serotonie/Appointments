@@ -10,6 +10,7 @@
 
 namespace OCA\Appointments\Backend;
 
+use Doctrine\DBAL\ParameterType;
 use OCA\Appointments\AppInfo\Application;
 use OCP\DB\Exception;
 use OCP\DB\QueryBuilder\IQueryBuilder;
@@ -1114,7 +1115,7 @@ class BackendUtils
                 $values['uri'] = $query->createNamedParameter($uri);
             }
             if ($apptDocData !== null) {
-                $values['appt_doc'] = $query->createNamedParameter($apptDocData);
+                $values['appt_doc'] = $query->createNamedParameter($apptDocData, ParameterType::BINARY);
             }
 
             $query->insert(self::HASH_TABLE_NAME)
@@ -1132,7 +1133,7 @@ class BackendUtils
                 $query->set('uri', $query->createNamedParameter($uri));
             }
             if ($apptDocData !== null) {
-                $query->set('appt_doc', $query->createNamedParameter($apptDocData));
+                $query->set('appt_doc', $query->createNamedParameter($apptDocData, ParameterType::BINARY));
             }
 
             $query->where($query->expr()->eq('uid', $query->createNamedParameter($uid)))
@@ -2283,7 +2284,16 @@ class BackendUtils
             $this->apptDoc->reset();
             $this->logger->error('can not find appt_doc for ' . $evtUid);
         } else {
-            $this->apptDoc->setFromString(substr($row['appt_doc'], 8), $evtUid);
+            if (is_resource($row['appt_doc'])) {
+                $appt_doc_string = stream_get_contents($row['appt_doc']);
+            } else {
+                $appt_doc_string = $row['appt_doc'];
+            }
+            if (empty($appt_doc_string) || strlen($appt_doc_string) < 8) {
+                $this->apptDoc->reset();
+            } else {
+                $this->apptDoc->setFromString(substr($appt_doc_string, 8), $evtUid);
+            }
         }
         return $this->apptDoc;
     }
@@ -2306,7 +2316,7 @@ class BackendUtils
         try {
             $query = $this->db->getQueryBuilder();
             $query->update(self::HASH_TABLE_NAME)
-                ->set('appt_doc', $query->createNamedParameter($docData))
+                ->set('appt_doc', $query->createNamedParameter($docData, ParameterType::BINARY))
                 ->where($query->expr()->eq(
                     'uid', $query->createNamedParameter($evtUid)))
                 ->execute();
