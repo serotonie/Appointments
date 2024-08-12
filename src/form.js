@@ -21,7 +21,7 @@
 		let number = document.getElementById('srgdev-ncfp_fnumber')
 		number.addEventListener("input", numberAutoComplete)
 
-		document.addEventListener("click", clickOnDOM)
+		//document.addEventListener("click", clickOnDOM)
 
 		let f = document.getElementById("srgdev-ncfp_frm")
 		f.addEventListener("submit", formSubmit)
