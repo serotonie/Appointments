@@ -17,7 +17,7 @@
 
 		let address = document.getElementById('srgdev-ncfp_fadress')
 		address.addEventListener("input", addressAutoComplete)
-		
+
 		let number = document.getElementById('srgdev-ncfp_fnumber')
 		number.addEventListener("input", numberAutoComplete)
 
@@ -31,8 +31,9 @@
 			f.autocomplete = "on"
 		}, 1000)
 
-
-		makeDpu(f.getAttribute("data-pps"))
+		const pso = makePso(f.getAttribute("data-pps"))
+		prefillFields(pso)
+		makeDpu(pso)
 		document.getElementById("srgdev-ncfp_sel-dummy").addEventListener("click", selClick)
 		document.getElementById("srgdev-ncfp_sel-dummy").addEventListener("keyup", function (evt) {
 			if (isSpaceKey(evt)) {
@@ -55,23 +56,72 @@
 		}, 900000)
 	}
 
-	function clickOnDOM(){
-		let listThatExists = document.getElementById("list")
-		if (listThatExists != null){
-			listThatExists.remove()
+	function makePso(pps) {
+		let pso = {}
+		let ta = pps.split('.')
+		for (let a, l = ta.length, i = 0; i < l; i++) {
+			a = ta[i].split(':')
+			pso[a[0]] = +a[1]
+		}
+		return pso
+	}
+
+
+	function prefillFields(pso) {
+
+		const formInputs = document.getElementById('srgdev-ncfp-main-inputs')
+
+		const urlParams = new URLSearchParams(
+			(pso['prefillInputs'] & 1) > 0
+				? window.location.search : ''
+		);
+
+		if (urlParams) {
+			// iterate over every formInputs and check if there is a query parameter with the same name
+			const prefilledType = pso['prefilledType']
+			for (let elm of formInputs.children) {
+				if (urlParams.has(elm.name)) {
+					// set the input's value
+					elm.value = urlParams.get(elm.name)
+
+					if (prefilledType === 2) {
+						// hide inputs
+						elm.style.display = 'none'
+						const label = document.querySelector(`label[for="${elm.id}"]`)
+						if (label) {
+							label.style.display = 'none'
+						}
+					} else if (prefilledType === 1) {
+						// readonly / plain text
+						elm.disabled = true
+
+						// create a label containing the input value
+						const valueLabel = document.createElement('label')
+						valueLabel.textContent = elm.value
+						valueLabel.style.display = 'block'
+						valueLabel.style.fontWeight = 'bold'
+
+						// append the label after the input
+						formInputs.insertBefore(valueLabel, elm.nextSibling)
+
+						// hide the field
+						elm.style.display = 'none'
+					}
+				}
+			}
 		}
 	}
 
-	function npaAutoComplete(e){	
-		if (e.originalTarget.value != ""){			
-			let uri = 'https://wedec.post.ch/api/address/v1/zips?'+ new URLSearchParams({
+	function npaAutoComplete(e) {
+		if (e.originalTarget.value != "") {
+			let uri = 'https://wedec.post.ch/api/address/v1/zips?' + new URLSearchParams({
 				"zipCity": e.originalTarget.value,
 				"type": "DOMICILE"
 			})
 
 			let authHeader = sessionStorage.getItem("tokenSwissPost")
-			fetch(uri,{
-				headers:{
+			fetch(uri, {
+				headers: {
 					"Authorization": authHeader
 				}
 			})
@@ -81,44 +131,44 @@
 		else {
 			autocomplete(e.originalTarget, [])
 		}
-	} 
+	}
 
-	function addressAutoComplete(e){
-		if (e.originalTarget.value != ""){
+	function addressAutoComplete(e) {
+		if (e.originalTarget.value != "") {
 			let npa = document.getElementById("srgdev-ncfp_fnpa")
-			let uri = 'https://wedec.post.ch/api/address/v1/streets?'+ new URLSearchParams({
+			let uri = 'https://wedec.post.ch/api/address/v1/streets?' + new URLSearchParams({
 				"name": e.originalTarget.value,
 				"zip": npa.value,
 				"type": "DOMICILE"
 			})
-	
+
 			let authHeader = sessionStorage.getItem("tokenSwissPost")
-			fetch(uri,{
-				headers:{
+			fetch(uri, {
+				headers: {
 					'Authorization': authHeader
 				}
 			})
 				.then((response) => response.json())
 				.then((data) => autocomplete(e.originalTarget, data.streets))
 		}
-		else{
+		else {
 			autocomplete(e.originalTarget, [])
 		}
 	}
 
-	function numberAutoComplete(e){
-		if (e.originalTarget.value != ""){			
+	function numberAutoComplete(e) {
+		if (e.originalTarget.value != "") {
 			let npa = document.getElementById("srgdev-ncfp_fnpa")
 			let street = document.getElementById("srgdev-ncfp_fadress")
-			let uri = 'https://wedec.post.ch/api/address/v1/houses?'+ new URLSearchParams({
+			let uri = 'https://wedec.post.ch/api/address/v1/houses?' + new URLSearchParams({
 				"zip": npa.value,
 				"streetname": street.value,
 				"number": e.originalTarget.value
 			})
-	
+
 			let authHeader = sessionStorage.getItem("tokenSwissPost")
-			fetch(uri,{
-				headers:{
+			fetch(uri, {
+				headers: {
 					'Authorization': authHeader
 				}
 			})
@@ -130,21 +180,21 @@
 		}
 	}
 
-	function autocomplete(inp, data){
+	function autocomplete(inp, data) {
 		let b
 		let listExists = document.getElementById("list")
-		if (listExists != null){
+		if (listExists != null) {
 			listExists.remove()
 		}
 		let list = document.createElement("ul")
 		list.setAttribute("id", "list")
 		inp.after(list)
 		let i = 0
-		data.forEach(function(el){
+		data.forEach(function (el) {
 			b = document.createElement("LI")
 			b.id = inp.name + i
 			b.classList.add("listItems")
-			if (inp.name === "npa"){
+			if (inp.name === "npa") {
 				b.innerHTML = `${el.zip} ${el.city18}`
 			}
 			else if (inp.name === "adress" || inp.name === "number") {
@@ -152,16 +202,16 @@
 			}
 			b.addEventListener("click", autocompleteClick)
 			list.appendChild(b)
-			i ++
+			i++
 		})
-		if (list.innerHTML === ""){
+		if (list.innerHTML === "") {
 			list.remove()
 		}
 	}
 
-	function autocompleteClick(e){
+	function autocompleteClick(e) {
 		document.getElementById("list").remove()
-		if (e.target.id.includes("npa")){
+		if (e.target.id.includes("npa")) {
 			let npaField = document.getElementById("srgdev-ncfp_fnpa")
 			let townField = document.getElementById("srgdev-ncfp_ftown")
 			let npaValue = e.originalTarget.innerHTML.substring(0, e.originalTarget.innerHTML.indexOf(' '))
@@ -169,7 +219,7 @@
 			npaField.value = npaValue
 			townField.value = townValue
 		}
-		else if (e.target.id.includes("adress")){
+		else if (e.target.id.includes("adress")) {
 			let addressField = document.getElementById("srgdev-ncfp_fadress")
 			let addressValue = e.originalTarget.innerHTML
 			addressField.value = addressValue
@@ -177,7 +227,7 @@
 			number.originalTarget = document.getElementById("srgdev-ncfp_fnumber")
 			numberAutoComplete(number)
 		}
-		else if (e.target.id.includes("number")){
+		else if (e.target.id.includes("number")) {
 			let numberField = document.getElementById("srgdev-ncfp_fnumber")
 			let numberValue = e.originalTarget.innerHTML
 			numberField.value = numberValue
@@ -561,7 +611,7 @@
 	}
 
 	function addSwipe(cont, bfc) {
-		cont.touchInfo = {x: 0, y: 0, id: -1}
+		cont.touchInfo = { x: 0, y: 0, id: -1 }
 		cont.bfNav = bfc
 		cont.addEventListener("touchstart", swipeStart)
 		cont.addEventListener("touchend", swipeEnd)
@@ -605,7 +655,7 @@
 	}
 
 
-	function makeDpu(pps) {
+	function makeDpu(pso) {
 
 		const PPS_NWEEKS = "nbrWeeks";
 		const PPS_EMPTY = "showEmpty";
@@ -614,13 +664,6 @@
 		const PPS_SHOWTZ = "showTZ";
 		const PPS_TIME2 = "time2Cols";
 		const PPS_END_TIME = "endTime";
-
-		let pso = {}
-		let ta = pps.split('.')
-		for (let a, l = ta.length, i = 0; i < l; i++) {
-			a = ta[i].split(':')
-			pso[a[0]] = +a[1]
-		}
 
 		let min_days = 7 * pso[PPS_NWEEKS]
 
@@ -659,7 +702,7 @@
 			const tzParam = urlParams.get('tz');
 			if (tzParam) {
 				try {
-					btz = Intl.DateTimeFormat(lang, {timeZone: tzParam}).resolvedOptions().timeZone
+					btz = Intl.DateTimeFormat(lang, { timeZone: tzParam }).resolvedOptions().timeZone
 				} catch (e) {
 					console.error("can not parse tz param:", e)
 					btz = undefined
@@ -670,7 +713,7 @@
 		let tf
 		if (has_intl) {
 			let f = new Intl.DateTimeFormat(lang,
-				{hour: "numeric", minute: "2-digit", timeZone: btz})
+				{ hour: "numeric", minute: "2-digit", timeZone: btz })
 			tf = f.format
 		} else {
 			tf = function (d) {
@@ -681,7 +724,7 @@
 		let df
 		if (has_intl) {
 			let f = new Intl.DateTimeFormat(lang,
-				{month: "long", timeZone: btz})
+				{ month: "long", timeZone: btz })
 			df = f.format
 		} else {
 			df = function (d) {
@@ -692,7 +735,7 @@
 		let wf
 		if (has_intl) {
 			let f = new Intl.DateTimeFormat(lang,
-				{weekday: "short", timeZone: btz})
+				{ weekday: "short", timeZone: btz })
 			wf = f.format
 		} else {
 			wf = function (d) {
@@ -703,7 +746,7 @@
 		let wft
 		if (has_intl) {
 			let f = new Intl.DateTimeFormat(lang,
-				{weekday: "short", month: "long", day: "2-digit", timeZone: btz})
+				{ weekday: "short", month: "long", day: "2-digit", timeZone: btz })
 			wft = f.format
 		} else {
 			wft = function (d) {
@@ -714,7 +757,7 @@
 		let wff
 		if (has_intl) {
 			let f = new Intl.DateTimeFormat(lang,
-				{weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: btz})
+				{ weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: btz })
 			wff = f.format
 		} else {
 			wff = function (d) {
@@ -726,7 +769,7 @@
 		let tzn = undefined
 		if (has_intl) {
 			try {
-				tzn = Intl.DateTimeFormat(lang, {timeZone: btz}).resolvedOptions().timeZone
+				tzn = Intl.DateTimeFormat(lang, { timeZone: btz }).resolvedOptions().timeZone
 			} catch (e) {
 				console.log("no Intl timeZone ", e)
 			}
@@ -734,9 +777,9 @@
 		}
 
 		for (let md = new Date(), tzo, tzi, t, tStr, atStr, sp, sp2, dur, dur_idx,
-			     ts, endTime = pso[PPS_END_TIME],
-			     ia = s.getAttribute("data-info").split(','),
-			     l = ia.length, i = 0, ds; i < l; i++) {
+			ts, endTime = pso[PPS_END_TIME],
+			ia = s.getAttribute("data-info").split(','),
+			l = ia.length, i = 0, ds; i < l; i++) {
 
 			//TODO: remove 'U' from ds ????
 			ds = ia[i]
@@ -797,7 +840,7 @@
 		}
 
 		dta.sort((a, b) => (a.rts > b.rts) ? 1 : -1)
-		dta.push({rts: 0, d: "", t: "", tzi: "", time: ""}) //last option to finalize the loop
+		dta.push({ rts: 0, d: "", t: "", tzi: "", time: "" }) //last option to finalize the loop
 
 		// console.log(dta)
 		s.dataRef = dta
@@ -919,8 +962,8 @@
 		if (pso[PPS_SHOWTZ] === 1 && has_intl) {
 			// getTzName=
 			getTzName = function (d) {
-				const short = d.toLocaleDateString(lang, {timeZone: btz});
-				const full = d.toLocaleDateString(lang, {timeZone: btz, timeZoneName: 'long'});
+				const short = d.toLocaleDateString(lang, { timeZone: btz });
+				const full = d.toLocaleDateString(lang, { timeZone: btz, timeZoneName: 'long' });
 
 				// Trying to remove date from the string in a locale-agnostic way
 				const shortIndex = full.indexOf(short);
