@@ -1,4 +1,5 @@
 <?php
+
 /** @noinspection PhpUndefinedFieldInspection */
 
 /** @noinspection PhpDocMissingThrowsInspection */
@@ -202,6 +203,9 @@ class BackendUtils
     public const PAGE_ENABLED = "enabled";
     public const PAGE_LABEL = "label";
 
+    private const STATE_PENDING = 1;
+    private const STATE_CONFIRMED = 2;
+
     private array|null $settings = null;
     private ApptDocProp|null $apptDoc = null;
 
@@ -211,11 +215,12 @@ class BackendUtils
     private IL10N $l10n;
     private LoggerInterface $logger;
 
-    public function __construct(IConfig         $config,
-                                IDBConnection   $db,
-                                IURLGenerator   $urlGenerator,
-                                IL10N           $l10n,
-                                LoggerInterface $logger
+    public function __construct(
+        IConfig         $config,
+        IDBConnection   $db,
+        IURLGenerator   $urlGenerator,
+        IL10N           $l10n,
+        LoggerInterface $logger
     ) {
         $this->config = $config;
         $this->db = $db;
@@ -295,24 +300,35 @@ class BackendUtils
                 $title = $t;
             }
         }
-        $evt->SUMMARY->setValue("⌛ " . $this->makeEvtTitle($userId, $info['name'] . " " . $info['family'], $info['_page_id'], $this->getAttendee($evt)->getValue()));
 
-        $dsr = $info['name'] . " " . $info['family'] ."\n" .
-                (empty($info['phone']) ? "" : ($info['phone'] . "\n")) .
-                $info['email'] . "\n" .
-                $info['adress'] . " " . $info['number'] . "\n" .
-                $info['npa'] . " " . $info['town'] . "\n" .
-                date("d-m-Y", strtotime($info['birthday'])) .
-                $info['_more_data'];
+        $evt->SUMMARY->setValue($this->makeEvtTitle(
+            self::STATE_PENDING,
+            $userId,
+            $info['name'],
+            $info['_page_id'],
+            $this->getAttendee($evt)->getValue(),
+            $title
+        ));
+
+        $dsr = $info['name'] . " " . $info['family'] . "\n" .
+            (empty($info['phone']) ? "" : ($info['phone'] . "\n")) .
+            $info['email'] . "\n" .
+            $info['adress'] . " " . $info['number'] . "\n" .
+            $info['npa'] . " " . $info['town'] . "\n" .
+            date("d-m-Y", strtotime($info['birthday'])) .
+            $info['_more_data'];
 
         // POST customer info to nodered to create everything needed
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL,"http://nodered.laudhair.intern:1890/newcustomer");
+        curl_setopt($ch, CURLOPT_URL, "http://nodered.laudhair.intern:1890/newcustomer");
         curl_setopt($ch, CURLOPT_POST, 1);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, 
-                    http_build_query($info));        
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);        
-        curl_exec($ch);        
+        curl_setopt(
+            $ch,
+            CURLOPT_POSTFIELDS,
+            http_build_query($info)
+        );
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_exec($ch);
         curl_close($ch);
 
         if (isset($info["_more_ics_text"])) {
@@ -374,13 +390,14 @@ class BackendUtils
             //  5: reserved for Talk pass @see $this->dataConfirmAttendee()
             $evt->{self::XAD_PROP}->setValue($this->encrypt(
                 $userId . chr(31)
-                . $title . chr(31)
-                . $info['_page_id'] . chr(31)
-                . $info['_embed'] . chr(31)
-                // talk link, if isset($info['talk_type_real']) means no need for talk room, @see PageController->showFormPost()
-                . (isset($info['talk_type_real']) ? 'd' : '_') . chr(31)
-                . '_', // talk pass
-                $evt->UID));
+                    . $title . chr(31)
+                    . $info['_page_id'] . chr(31)
+                    . $info['_embed'] . chr(31)
+                    // talk link, if isset($info['talk_type_real']) means no need for talk room, @see PageController->showFormPost()
+                    . (isset($info['talk_type_real']) ? 'd' : '_') . chr(31)
+                    . '_', // talk pass
+                $evt->UID
+            ));
         }
 
         $this->setSEQ($evt);
@@ -449,7 +466,6 @@ class BackendUtils
             $this->saveApptDoc($apptDoc, $evt);
             $r[0] = $new_type;
             $r[1] = $vo->serialize();
-
         } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
             // TODO: remove soon
             // legacy
@@ -457,7 +473,8 @@ class BackendUtils
             // @see BackendUtils->dataSetAttendee for BackendUtils::XAD_PROP
             $xad = explode(chr(31), $this->decrypt(
                 $evt->{BackendUtils::XAD_PROP}->getValue(),
-                $evt->UID->getValue()));
+                $evt->UID->getValue()
+            ));
 
             if (count($xad) > 4) {
 
@@ -480,7 +497,6 @@ class BackendUtils
                     // ... so, set $xad[4]='_' @see BackendUtils->dataSetAttendee
                     // this will add a talk room and description when addTalkInfo is called
                     $xad[4] = '_';
-
                 } elseif (strlen($xad[4]) > 1) {
                     // this was a virtual appointment...
                     // ... $xad[4] is the room token.
@@ -533,25 +549,26 @@ class BackendUtils
             return [null, null, ""];
         }
 
+        $presetTitle = "";
         if (isset($evt->{ApptDocProp::PROP_NAME})) {
             $apptDoc = $this->getApptDoc($evt);
+            $presetTitle = $apptDoc->title;
 
             $dts = $this->getDateTimeString(
                 $evt->DTSTART->getDateTime(),
                 $apptDoc->attendeeTimezone
             );
-
         } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
             // @see BackendUtils->dataSetAttendee for BackendUtils::XAD_PROP
             $xad = explode(chr(31), $this->decrypt(
                 $evt->{BackendUtils::XAD_PROP}->getValue(),
-                $evt->UID->getValue()));
+                $evt->UID->getValue()
+            ));
 
             $dts = $this->getDateTimeString(
                 $evt->DTSTART->getDateTime(),
                 $evt->{self::TZI_PROP}->getValue()
             );
-
         } else {
             return [null, null, ""];
         }
@@ -567,7 +584,14 @@ class BackendUtils
         if (!isset($evt->SUMMARY)) {
             $evt->add('SUMMARY');
         } // ???
-        $evt->SUMMARY->setValue("✔️ " . $this->makeEvtTitle($userId, $attendeeName, $pageId, $this->getAttendee($evt)->getValue()));
+        $evt->SUMMARY->setValue($this->makeEvtTitle(
+            self::STATE_CONFIRMED,
+            $userId,
+            $attendeeName,
+            $pageId,
+            $this->getAttendee($evt)->getValue(),
+            $presetTitle
+        ));
 
         //Talk link
         if (isset($evt->{ApptDocProp::PROP_NAME})) {
@@ -612,8 +636,10 @@ class BackendUtils
             return $ret;
         }
 
-        if ($a->parameters['PARTSTAT']->getValue() === 'DECLINED'
-            || $evt->STATUS->getValue() === 'CANCELLED') {
+        if (
+            $a->parameters['PARTSTAT']->getValue() === 'DECLINED'
+            || $evt->STATUS->getValue() === 'CANCELLED'
+        ) {
             // cancelled
             $ret[1] = self::PREF_STATUS_CANCELLED;
         } else {
@@ -658,7 +684,8 @@ class BackendUtils
                     $token = $ti->createRoomForEvent(
                         $attendee->parameters['CN']->getValue(),
                         $evt->DTSTART,
-                        $userId);
+                        $userId
+                    );
                     if (!empty($token)) {
 
                         $l10n = $this->l10n;
@@ -674,7 +701,9 @@ class BackendUtils
                                 $token = $xad[4];
                             }
                             $evt->{self::XAD_PROP}->setValue($this->encrypt(
-                                implode(chr(31), $xad), $evt->UID));
+                                implode(chr(31), $xad),
+                                $evt->UID
+                            ));
 
                             $this->updateDescription($evt, "\n\n" .
                                 $ti->getRoomURL($token) . $pi);
@@ -682,7 +711,6 @@ class BackendUtils
                             $r = (!empty($settings[self::TALK_FORM_VIRTUAL_TXT])
                                 ? $settings[self::TALK_FORM_VIRTUAL_TXT]
                                 : $settings[self::TALK_FORM_DEF_VIRTUAL]);
-
                         } else {
 
                             $this->updateDescription($evt, "\n\n" .
@@ -695,7 +723,9 @@ class BackendUtils
                 // set xad to 'f' and add self::TALK_FORM_REAL_TXT to description
                 $xad[4] = 'f';
                 $evt->{self::XAD_PROP}->setValue($this->encrypt(
-                    implode(chr(31), $xad), $evt->UID));
+                    implode(chr(31), $xad),
+                    $evt->UID
+                ));
 
                 $r = (!empty($settings[self::TALK_FORM_REAL_TXT])
                     ? $settings[self::TALK_FORM_REAL_TXT]
@@ -763,7 +793,8 @@ class BackendUtils
                 $token = $ti->createRoomForEvent(
                     $attendeeName,
                     $evt->DTSTART,
-                    $userId);
+                    $userId
+                );
                 if (!empty($token)) {
 
                     $l10n = $this->l10n;
@@ -781,7 +812,6 @@ class BackendUtils
 
                         $this->updateDescription($evt, "\n\n" .
                             $ti->getRoomURL($token) . $pi);
-
                     } else {
                         $this->updateDescription($evt, "\n\n" .
                             $l10n->t("Talk integration error: check logs"));
@@ -790,7 +820,8 @@ class BackendUtils
             } elseif ($settings[self::BBB_ENABLED] === true) {
 
                 $bi = \OC::$server->get(BbbIntegration::class);
-                $roomData = $bi->createRoomForEvent($attendeeName,
+                $roomData = $bi->createRoomForEvent(
+                    $attendeeName,
                     $evt->DTSTART,
                     $userId,
                     $settings[self::BBB_PASSWORD] === true
@@ -805,20 +836,20 @@ class BackendUtils
                         $description .= "\n" . $this->l10n->t('Guest Password: %s', [$doc->bbbPass]);
                     }
                     $this->updateDescription($evt, "\n\n" . $description);
-
                 } else {
                     $this->updateDescription($evt, "\n\n" .
                         $this->l10n->t("Video/audio integration error: check logs"));
                 }
             }
-
         } else {
             $this->updateDescription($evt, "\n\n" . $r);
         }
 
         // location need to be properly set
-        if ($settings[self::BBB_ENABLED] === false
-            && $settings[self::TALK_ENABLED] === false) {
+        if (
+            $settings[self::BBB_ENABLED] === false
+            && $settings[self::TALK_ENABLED] === false
+        ) {
             // real location (not an online)
             $location = !empty($settings[self::ORG_ADDR])
                 ? $settings[self::ORG_ADDR]
@@ -896,8 +927,10 @@ class BackendUtils
             );
         }
 
-        if ($a->parameters['PARTSTAT']->getValue() === 'DECLINED'
-            || $evt->STATUS->getValue() === 'CANCELLED') {
+        if (
+            $a->parameters['PARTSTAT']->getValue() === 'DECLINED'
+            || $evt->STATUS->getValue() === 'CANCELLED'
+        ) {
             // Already cancelled
             return ["", $dts];
         }
@@ -938,7 +971,6 @@ class BackendUtils
             $evt->add('TRANSP');
         }
         $evt->TRANSP->setValue("TRANSPARENT");
-
     }
 
 
@@ -1000,7 +1032,8 @@ class BackendUtils
         } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
             $xad = explode(chr(31), $this->decrypt(
                 $evt->{BackendUtils::XAD_PROP}->getValue(),
-                $evt->UID->getValue()));
+                $evt->UID->getValue()
+            ));
             if (count($xad) > 1 && !empty($xad[1]) && $xad[1][0] === '_') {
                 $title = $xad[1];
             }
@@ -1094,8 +1127,10 @@ class BackendUtils
                         $cutoff_str = (new \DateTime())->modify('-42 days')->format(BackendUtils::FLOAT_TIME_FORMAT);
                         $query = $this->db->getQueryBuilder();
                         $query->delete(BackendUtils::HASH_TABLE_NAME)
-                            ->where($query->expr()->lt('hash',
-                                $query->createNamedParameter($cutoff_str)))
+                            ->where($query->expr()->lt(
+                                'hash',
+                                $query->createNamedParameter($cutoff_str)
+                            ))
                             ->execute();
                     }
                     break;
@@ -1124,7 +1159,8 @@ class BackendUtils
             $values = [
                 'uid' => $query->createNamedParameter($uid),
                 'hash' => $query->createNamedParameter(
-                    $this->makeApptHash($evt)),
+                    $this->makeApptHash($evt)
+                ),
                 'user_id' => $query->createNamedParameter($userId),
                 'start' => $query->createNamedParameter($start_ts),
                 'status' => $query->createNamedParameter($status),
@@ -1144,7 +1180,8 @@ class BackendUtils
             $query->update(self::HASH_TABLE_NAME)
                 ->set('uid', $query->createNamedParameter($uid))
                 ->set('hash', $query->createNamedParameter(
-                    $this->makeApptHash($evt)))
+                    $this->makeApptHash($evt)
+                ))
                 ->set('start', $query->createNamedParameter($start_ts))
                 ->set('status', $query->createNamedParameter($status))
                 ->set('page_id', $query->createNamedParameter($pageId));
@@ -1178,8 +1215,10 @@ class BackendUtils
     {
         $query = $db->getQueryBuilder();
         $query->delete(self::HASH_TABLE_NAME)
-            ->where($query->expr()->eq('uid',
-                $query->createNamedParameter($uid)))
+            ->where($query->expr()->eq(
+                'uid',
+                $query->createNamedParameter($uid)
+            ))
             ->execute();
     }
 
@@ -1443,10 +1482,14 @@ class BackendUtils
         $qb = $this->db->getQueryBuilder();
         $r = $qb->select(self::KEY_TOKEN, self::KEY_DATA, self::KEY_REMINDERS)
             ->from(self::PREF_TABLE_V2_NAME)
-            ->where($qb->expr()->eq(self::KEY_USER_ID,
-                $qb->createNamedParameter($userId)))
-            ->andWhere($qb->expr()->eq(self::KEY_PAGE_ID,
-                $qb->createNamedParameter($pageId)))
+            ->where($qb->expr()->eq(
+                self::KEY_USER_ID,
+                $qb->createNamedParameter($userId)
+            ))
+            ->andWhere($qb->expr()->eq(
+                self::KEY_PAGE_ID,
+                $qb->createNamedParameter($pageId)
+            ))
             ->executeQuery();
         $row = $r->fetch();
         $r->closeCursor();
@@ -1521,8 +1564,10 @@ class BackendUtils
         $qb = $this->db->getQueryBuilder();
         $r = $qb->select(self::KEY_PAGE_ID, self::KEY_DATA)
             ->from(self::PREF_TABLE_V2_NAME)
-            ->where($qb->expr()->eq(self::KEY_USER_ID,
-                $qb->createNamedParameter($userId)))
+            ->where($qb->expr()->eq(
+                self::KEY_USER_ID,
+                $qb->createNamedParameter($userId)
+            ))
             ->executeQuery();
         $pages = [];
 
@@ -1589,9 +1634,13 @@ class BackendUtils
             $qb = $this->db->getQueryBuilder();
             $qb->update($tableName)
                 ->where($qb->expr()->eq(
-                    self::KEY_USER_ID, $qb->createNamedParameter($userId)))
+                    self::KEY_USER_ID,
+                    $qb->createNamedParameter($userId)
+                ))
                 ->andWhere($qb->expr()->eq(
-                    self::KEY_PAGE_ID, $qb->createNamedParameter($pageId)));
+                    self::KEY_PAGE_ID,
+                    $qb->createNamedParameter($pageId)
+                ));
             // self::KEY_DATA, self::KEY_REMINDERS is set
             $r = $this->setQbValues($qb, $columns, false)
                 ->executeStatement();
@@ -1635,10 +1684,14 @@ class BackendUtils
         $count = 0;
         try {
             $count = $qb->delete(self::PREF_TABLE_V2_NAME)
-                ->where($qb->expr()->eq('user_id',
-                    $qb->createNamedParameter($userId)))
-                ->andWhere($qb->expr()->eq('page_id',
-                    $qb->createNamedParameter($pageId)))
+                ->where($qb->expr()->eq(
+                    'user_id',
+                    $qb->createNamedParameter($userId)
+                ))
+                ->andWhere($qb->expr()->eq(
+                    'page_id',
+                    $qb->createNamedParameter($pageId)
+                ))
                 ->execute();
         } catch (Exception $e) {
             $this->logger->error("deletePage error: " . $e->getMessage());
@@ -1654,8 +1707,10 @@ class BackendUtils
             $qb = $this->db->getQueryBuilder();
             $r = $qb->select('id')
                 ->from(self::PREF_TABLE_V2_NAME)
-                ->where($qb->expr()->eq(self::KEY_TOKEN,
-                    $qb->createNamedParameter($token)))
+                ->where($qb->expr()->eq(
+                    self::KEY_TOKEN,
+                    $qb->createNamedParameter($token)
+                ))
                 ->executeQuery();
 
             $id = $r->fetch();
@@ -1702,10 +1757,14 @@ class BackendUtils
         try {
             $r = $qb->update(self::PREF_TABLE_V2_NAME)
                 ->set(self::KEY_DATA, $qb->createNamedParameter($settingsStr))
-                ->where($qb->expr()->eq(self::KEY_USER_ID,
-                    $qb->createNamedParameter($userId)))
-                ->andWhere($qb->expr()->eq(self::KEY_PAGE_ID,
-                    $qb->createNamedParameter($pageId)))
+                ->where($qb->expr()->eq(
+                    self::KEY_USER_ID,
+                    $qb->createNamedParameter($userId)
+                ))
+                ->andWhere($qb->expr()->eq(
+                    self::KEY_PAGE_ID,
+                    $qb->createNamedParameter($pageId)
+                ))
                 ->executeStatement();
         } catch (\Throwable $e) {
             $this->logger->error($e->getMessage(), [
@@ -1862,8 +1921,8 @@ class BackendUtils
             return ['err' => $l10n->t("Your email address is required for this operation.")];
         }
         if (!empty($addr)) {
-//        ESCAPED-CHAR = ("\\" / "\;" / "\," / "\N" / "\n")
-//        \\ encodes \ \N or \n encodes newline \; encodes ; \, encodes ,
+            //        ESCAPED-CHAR = ("\\" / "\;" / "\," / "\N" / "\n")
+            //        \\ encodes \ \N or \n encodes newline \; encodes ; \, encodes ,
             $addr = str_replace(array("\\", ";", ",", "\r\n", "\r", "\n"), array('\\\\', '\;', '\,', ' \n', ' \n', ' \n'), $addr);
         }
 
@@ -1903,7 +1962,9 @@ class BackendUtils
     private function chunk_split_unicode($str, $l = 76, $e = "\r\n"): string
     {
         $tmp = array_chunk(
-            preg_split("//u", $str, -1, PREG_SPLIT_NO_EMPTY), $l);
+            preg_split("//u", $str, -1, PREG_SPLIT_NO_EMPTY),
+            $l
+        );
         $str = "";
         foreach ($tmp as $t) {
             $str .= join("", $t) . $e;
@@ -1947,7 +2008,8 @@ class BackendUtils
                     $tz_name = trim(substr(
                         $cal['timezone'],
                         $tz_start,
-                        strpos($cal['timezone'], "\n", $tz_start) - $tz_start));
+                        strpos($cal['timezone'], "\n", $tz_start) - $tz_start
+                    ));
                     $tz = new \DateTimeZone($tz_name);
                 } catch (\Exception $e) {
                     $this->logger->error("getCalendarTimezone error: " . $e->getMessage());
@@ -2016,8 +2078,11 @@ class BackendUtils
 
             if ($short_dt === 0) {
                 $date_time = $l10N->l('date', $d, ['width' => 'full']) . ', ' .
-                    str_replace(':00 ', ' ',
-                        $l10N->l('time', $d, ['width' => 'full']));
+                    str_replace(
+                        ':00 ',
+                        ' ',
+                        $l10N->l('time', $d, ['width' => 'full'])
+                    );
             } else {
                 if ($short_dt === 1) {
                     $date_time = $l10N->l('datetime', $d, ['width' => 'short']);
@@ -2034,7 +2099,8 @@ class BackendUtils
     {
         if ($iv === '') {
             $iv = $_iv = openssl_random_pseudo_bytes(
-                openssl_cipher_iv_length(self::CIPHER));
+                openssl_cipher_iv_length(self::CIPHER)
+            );
         } else {
             $_iv = '';
         }
@@ -2043,7 +2109,8 @@ class BackendUtils
             self::CIPHER,
             $key,
             OPENSSL_RAW_DATA,
-            $iv);
+            $iv
+        );
 
         return $_iv !== ''
             ? base64_encode($_iv . $ciphertext_raw)
@@ -2065,7 +2132,8 @@ class BackendUtils
             self::CIPHER,
             $key,
             OPENSSL_RAW_DATA,
-            substr($s1, 0, $ivlen));
+            substr($s1, 0, $ivlen)
+        );
         return $t === false ? '' : $t;
     }
 
@@ -2135,7 +2203,6 @@ class BackendUtils
         }
 
         return $row[self::KEY_TOKEN];
-
     }
 
     function transformCalInfo(array $c, bool $skipReadOnly = true): array|null
@@ -2194,16 +2261,20 @@ class BackendUtils
         $qb = $this->db->getQueryBuilder();
         try {
             $qb->delete(self::SYNC_TABLE_NAME)
-                ->where($qb->expr()->eq('id',
-                    $qb->createNamedParameter($subscriptionId)))
+                ->where($qb->expr()->eq(
+                    'id',
+                    $qb->createNamedParameter($subscriptionId)
+                ))
                 ->execute();
         } catch (Exception $e) {
             $this->logger->error("removeSubscriptionSync error: " . $e->getMessage());
         }
     }
 
-    private function makeEvtTitle(string $userId, string $attendeeName, string $pageId, string $av): string
+    private function makeEvtTitle(int $state, string $userId, string $attendeeName, string $pageId, string $av, string $presetTitle): string
     {
+        $icon = $state === self::STATE_PENDING ? "⌛" : "✔️";
+
         $settings = $this->getUserSettings();
         if (isset($settings[self::CLS_TITLE_TEMPLATE]) && !empty($settings[self::CLS_TITLE_TEMPLATE])) {
 
@@ -2217,22 +2288,33 @@ class BackendUtils
             $tkn = strtoupper(substr(str_replace(' ', '', $attendeeName), 0, 3)) .
                 strtoupper(substr(str_replace(['+', '/', '='], '', base64_encode(sha1($attendeeName . $av . $userId, true))), 0, 8));
 
+            // %I = Icon ("✔️")
             // %N = Attendee Name
             // %O = Organization Name
             // %P = Page Tag
             // %T = Mask Token
-            return str_replace(["%N", "%O", "%P", "%T"],
-                [$attendeeName, $settings[self::ORG_NAME], $pageTag, $tkn], $tmpl);
+            // %E = Event Preset Title
+            if ($state === self::STATE_PENDING && !str_contains($tmpl, "%I")) {
+                // for pending appointments we must have the "⌛" icon
+                $tmpl = "%I " . $tmpl;
+            }
+            return str_replace(
+                ["%I", "%N", "%O", "%P", "%T", "%E"],
+                [$icon, $attendeeName, $settings[self::ORG_NAME], $pageTag, $tkn, ltrim($presetTitle, '_')],
+                $tmpl
+            );
         } else {
-            return $attendeeName;
+            return $icon . ' ' . $attendeeName;
         }
     }
 
     public function getInlineStyle(string $userId, array $settings): string
     {
 
-        if ($settings[BackendUtils::PSN_USE_NC_THEME]
-            && $this->config->getAppValue('theming', 'disable-user-theming', 'no') !== 'yes') {
+        if (
+            $settings[BackendUtils::PSN_USE_NC_THEME]
+            && $this->config->getAppValue('theming', 'disable-user-theming', 'no') !== 'yes'
+        ) {
 
             $appointmentsBackgroundImage = "var(--image-background-default)";
             $appointmentsBackgroundColor = "transparent";
@@ -2325,7 +2407,9 @@ class BackendUtils
             $query->update(self::HASH_TABLE_NAME)
                 ->set('appt_doc', $query->createNamedParameter($docData, ParameterType::BINARY))
                 ->where($query->expr()->eq(
-                    'uid', $query->createNamedParameter($evtUid)))
+                    'uid',
+                    $query->createNamedParameter($evtUid)
+                ))
                 ->execute();
         } catch (\Throwable $e) {
             $this->logger->error('saveApptDoc failed for ' . $evtUid . ': ' . $e->getMessage());
@@ -2334,4 +2418,3 @@ class BackendUtils
         return true;
     }
 }
-
