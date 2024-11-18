@@ -22,7 +22,8 @@ export const readOnlyProps = {
 	// reminder related props
 	bjm: '',
 	cliUrl: '',
-	defaultLang: ''
+	defaultLang: '',
+	token: ''
 }
 export const useSettingsStore = defineStore('settings', {
 	state: () => ({
@@ -79,12 +80,12 @@ export const useSettingsStore = defineStore('settings', {
 			time2Cols: false,
 			endTime: false,
 			hidePhone: false,
-			showTZ: false,
 			gdpr: '',
 			gdprNoChb: false,
 			pageTitle: '',
 			prefillInputs: 0,
 			prefilledType: 0,
+			formFinishText: '',
 			metaNoIndex: false,
 			pageStyle: '',
 			useNcTheme: false,
@@ -95,6 +96,11 @@ export const useSettingsStore = defineStore('settings', {
 			},
 			fi_html: '',
 			fi_json: [],
+
+			secHcapSiteKey: '',
+			secHcapSecret: '',
+			secHcapEnabled: false,
+			secEmailBlacklist: [],
 
 			reminders_data_0_seconds: '0',
 			reminders_data_0_actions: false,

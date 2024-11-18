@@ -12,7 +12,7 @@ style('appointments', 'form');
         $disabled = 'disabled ';
     }
     /** @noinspection PhpUndefinedVariableInspection */
-    print $_['appt_inline_style'] . '<form autocomplete="off" method="POST" class="srgdev-ncfp-form" ' . $disabled . ' id="srgdev-ncfp_frm" data-pps="' . $_['appt_pps'] . '" novalidate data-translations="' . $_['translations'] . '">
+    print $_['appt_inline_style'] . '<form autocomplete="off" method="POST" class="srgdev-ncfp-form" ' . $disabled . ' id="srgdev-ncfp_frm" data-pps="' . $_['appt_pps'] . '" novalidate data-translations="' . $_['translations'] . '" data-zones="'. $_['zones_file'] .'">
         <h2 class="srgdev-ncfp-form-org">' . htmlentities($_['appt_org_name']) . '</h2>
         <div class="srgdev-ncfp-form-addr">' . $_['appt_org_addr'] . '</div>
         <h3 class="srgdev-ncfp-form-header">' .
@@ -96,6 +96,9 @@ style('appointments', 'form');
                 echo $_['appt_gdpr'];
             }
             echo '</div>';
+        }
+        if (!empty($_['hCapKey'])) {
+            echo '<div class="h-captcha" data-sitekey="' . $_['hCapKey'] . '"></div>';
         }
         ?>
         <button id="srgdev-ncfp_fbtn" <?php echo $disabled ?>class="primary srgdev-ncfp-form-btn" data-tr-ses-to="<?php echo htmlspecialchars($l->t('Session Timeout. Reload.'), ENT_QUOTES, 'UTF-8'); ?>"><span>

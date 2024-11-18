@@ -7,6 +7,7 @@
 namespace OCA\Appointments\Controller;
 
 use OC\AppFramework\Middleware\Security\Exceptions\NotLoggedInException;
+use OC\Security\CSP\ContentSecurityPolicyNonceManager;
 use OCA\Appointments\AppInfo\Application;
 use OCA\Appointments\Backend\BackendManager;
 use OCA\Appointments\Backend\BackendUtils;
@@ -17,12 +18,14 @@ use OCP\AppFramework\Http\NotFoundResponse;
 use OCP\AppFramework\Http\RedirectResponse;
 use OCP\AppFramework\Http\Response;
 use OCP\AppFramework\Http\Template\PublicTemplateResponse;
+use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use OCP\IGroupManager;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\AppFramework\Http\TemplateResponse;
 use OCP\AppFramework\Controller;
+use OCP\IURLGenerator;
 use OCP\IUserSession;
 use OCP\Mail\IMailer;
 use OCP\Util;
@@ -33,6 +36,8 @@ class PageController extends Controller
     const RND_SPS = 'abcdefghijklmnopqrstuvwxyz1234567890';
     const RND_SPU = '1234567890ABCDEF';
 
+    const TEST_TOKEN_CNF = '3b719b44-8ec9-41e9-b161-00fb1515b1ed';
+
     private string|null $userId;
     private IConfig $c;
     private IMailer $mailer;
@@ -41,6 +46,7 @@ class PageController extends Controller
     private BackendUtils $utils;
     private LoggerInterface $logger;
     private IUserSession $userSession;
+    private IURLGenerator $urlGenerator;
 
     public function __construct(IRequest        $request,
                                 IConfig         $c,
@@ -49,6 +55,7 @@ class PageController extends Controller
                                 IUserSession    $userSession,
                                 BackendManager  $backendManager,
                                 BackendUtils    $utils,
+                                IURLGenerator   $urlGenerator,
                                 LoggerInterface $logger
     ) {
         parent::__construct(Application::APP_ID, $request);
@@ -59,6 +66,7 @@ class PageController extends Controller
         /** @noinspection PhpUnhandledExceptionInspection */
         $this->bc = $backendManager->getConnector();
         $this->utils = $utils;
+        $this->urlGenerator = $urlGenerator;
         $this->logger = $logger;
         $this->userId = $this->userSession->getUser()?->getUID();
     }
@@ -294,10 +302,16 @@ class PageController extends Controller
 
         $this->throwIfPrivateModeNotLoggedIn();
 
-        $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
-        $uri = $this->utils->decrypt(substr($pd, 1), $key) . ".ics";
-        if (empty($uri)) {
-            return $this->pubErrResponse($userId, $embed);
+        $dParam = substr($pd, 1);
+        if ($dParam === self::TEST_TOKEN_CNF) {
+            // shortcircut to testing
+            $a = '-' . $a;
+        } else {
+            $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
+            $uri = $this->utils->decrypt($dParam, $key) . ".ics";
+            if (empty($uri)) {
+                return $this->pubErrResponse($userId, $embed);
+            }
         }
 
         $settings = $this->utils->getUserSettings();
@@ -308,7 +322,7 @@ class PageController extends Controller
             return $this->pubErrResponse($userId, $embed);
         }
 
-        $tr_params = [];
+        $tr_params = ['appt_c_more' => ''];
 
         // take action automatically if "Skip email verification step" is set
         $take_action = $a === '2';
@@ -338,7 +352,7 @@ class PageController extends Controller
             // Confirm or Skip email verification step ($a==='2')
 
             $a_ok = true;
-            $skip_evs_text = '';
+            $skip_evs_email = '';
 
             if ($a === '2') {
                 $a_ok = false;
@@ -348,11 +362,12 @@ class PageController extends Controller
                     if ($ts + 8 >= time()) {
                         $em = substr($uri, 4, $sp);
                         if ($this->mailer->validateMailAddress($em)) {
+                            // form is ok and skip evs is active
                             $uri = substr($uri, $sp + 1 + 4);
-                            // TRANSLATORS the '%s' is an email address
-                            $skip_evs_text = $this->l->t("An email with additional details is on its way to you at %s", [$em]);
+                            $skip_evs_email = $em;
                             $a_ok = true; // :)
                             $a_base = true;
+                            $tr_params['appt_c_more'] = $settings[BackendUtils::PSN_FORM_FINISH_TEXT];
                         }
                     } else {
                         // link expired
@@ -373,7 +388,7 @@ class PageController extends Controller
 
                     if ($sts === 0) {
                         // Appointment is confirmed successfully
-                        $page_text = $this->getPageText($date_time, BackendUtils::PREF_STATUS_CONFIRMED) . " " . $skip_evs_text;
+                        $page_text = $this->makeConfirmedPageText($date_time, $skip_evs_email);
                     } elseif ($otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
                         // edge case (simple mode): this could be a page reload, and we need to check DEST calendar just in-case the appointment has been confirmed already
 
@@ -573,6 +588,17 @@ class PageController extends Controller
                     }
                 }
             }
+        } elseif ($a[0] === '-') {
+            // testing
+            $sts = 0;
+            // -2
+            $take_action = true;
+            $date_time = $this->utils->getDateTimeString(
+                new \DateTimeImmutable('now'),
+                '_UTC'
+            );
+            $page_text = $this->makeConfirmedPageText($date_time, 'test.email@domain.com');
+            $tr_params['appt_c_more'] = $settings[BackendUtils::PSN_FORM_FINISH_TEXT];
         }
 
         if ($sts === 0) {
@@ -623,6 +649,16 @@ class PageController extends Controller
 
         return $tr;
     }
+
+    private function makeConfirmedPageText(string $date_time, string $skip_evs_email): string
+    {
+        return $this->getPageText($date_time, BackendUtils::PREF_STATUS_CONFIRMED) .
+            (!empty($skip_evs_email)
+                // TRANSLATORS the '%s' is an email address
+                ? (" " . $this->l->t("An email with additional details is on its way to you at %s", [$skip_evs_email]))
+                : '');
+    }
+
 
     private function pubErrResponse(string $userId, bool $embed): Response
     {
@@ -692,6 +728,9 @@ class PageController extends Controller
         $ok_uri = "form?sts=0" . $pageParam;
         $bad_input_url = "form?sts=1" . $pageParam;
         $server_err_url = "form?sts=2" . $pageParam;
+        $captcha_failed_url = "form?sts=3" . $pageParam;
+        $captcha_server_error_url = "form?sts=4" . $pageParam;
+        $blocked_error_url = "form?sts=5" . $pageParam;
 
         $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
         if (empty($key)) {
@@ -735,6 +774,23 @@ class PageController extends Controller
             $rr->setStatus(303);
             return $rr;
         }
+
+        if (!empty($settings[BackendUtils::SEC_EMAIL_BLACKLIST]) && is_array($settings[BackendUtils::SEC_EMAIL_BLACKLIST])) {
+            $_email = $post['email'];
+            foreach ($settings[BackendUtils::SEC_EMAIL_BLACKLIST] as $blocked) {
+                if ($_email === $blocked ||
+                    // domain block
+                    (str_starts_with($blocked, '*@')
+                        && str_ends_with($_email, substr($blocked, 1)))
+                ) {
+                    $rr = new RedirectResponse($blocked_error_url);
+                    $rr->setStatus(303);
+                    return $rr;
+
+                }
+            }
+        }
+
         if ($hide_phone) {
             $post['phone'] = "";
         }
@@ -773,6 +829,21 @@ class PageController extends Controller
             }
         }
         $post['_more_data'] = $v;
+
+        if ($settings[BackendUtils::SEC_HCAP_ENABLED] === true
+            && !empty($settings[BackendUtils::SEC_HCAP_SECRET])
+            && !empty($settings[BackendUtils::SEC_HCAP_SITE_KEY])
+        ) {
+            if (($cErr = $this->validateHCaptcha($post, $settings)) !== 0) {
+                if ($cErr === 1) {
+                    $rr = new RedirectResponse($captcha_failed_url);
+                } else {
+                    $rr = new RedirectResponse($captcha_server_error_url);
+                }
+                $rr->setStatus(303);
+                return $rr;
+            }
+        }
 
         // Input seems OK...
 
@@ -916,7 +987,7 @@ class PageController extends Controller
     private function showFinish(string $render, string $uid): Response
     {
         // Redirect to finalize page...
-        // sts: 0=OK, 1=bad input, 2=server error
+        // sts: 0=OK, 1=bad input, 2=server error, 3=bad captcha, 4=captcha server error, 5=blocked
         // sts=2&r=1: race condition while booking
         // d=time and email
 
@@ -939,8 +1010,13 @@ class PageController extends Controller
                 $param['appt_e_ne'] = $settings[BackendUtils::ORG_EMAIL];
             }
         } elseif ($sts === '0') {
-            $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
-            $dd = $this->utils->decrypt($this->request->getParam('d', ''), $key);
+            $dParam = $this->request->getParam('d', '');
+            if ($dParam === self::TEST_TOKEN_CNF) {
+                $dd = pack('L', time()) . 'test.email@domain.com';
+            } else {
+                $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
+                $dd = $this->utils->decrypt($dParam, $key);
+            }
             if (strlen($dd) > 7) {
                 $ts = unpack('Lint', substr($dd, 0, 4))['int'];
                 $em = substr($dd, 4);
@@ -948,6 +1024,7 @@ class PageController extends Controller
                     if ($this->mailer->validateMailAddress($em)) {
                         $tmpl = 'public/thanks';
                         $param['appt_c_msg'] = $this->l->t("We have sent an email to %s, please open it and click on the confirmation link to finalize your appointment request", [$em]);
+                        $param['appt_c_more'] = $settings[BackendUtils::PSN_FORM_FINISH_TEXT];
                         $rs = 200;
                     }
                 } else {
@@ -958,6 +1035,12 @@ class PageController extends Controller
                     $rs = 409;
                 }
             }
+        } elseif ($sts === '3') {
+            $param['input_err'] = $this->l->t("Human verification failed");
+        } elseif ($sts === '4') {
+            $param['input_err'] = $this->l->t("Internal server error: validation request failed");
+        } elseif ($sts === '5') {
+            $param['input_err'] = $this->l->t('We regret to inform you that your email address has been blocked due to activity that violates our community guidelines.');
         }
 
         if ($render === "public") {
@@ -1013,8 +1096,31 @@ class PageController extends Controller
             'appt_hide_phone' => $settings[BackendUtils::PSN_HIDE_TEL],
             'more_html' => "<div id=tokenSwissPost style='display: none;'>" . $tokenSwissPost . "</div>",
             'application' => $this->l->t('Appointments'),
-            'translations' => ''
+            'translations' => '',
+            'hCapKey' => '',
         ];
+
+        if ($settings[BackendUtils::SEC_HCAP_ENABLED] === true
+            && !empty($settings[BackendUtils::SEC_HCAP_SECRET])
+            && !empty($settings[BackendUtils::SEC_HCAP_SITE_KEY])
+        ) {
+            Util::addHeader("script", [
+                'src' => 'https://www.hCaptcha.com/1/api.js',
+                'async' => '',
+                'nonce' => \OC::$server->get(ContentSecurityPolicyNonceManager::class)->getNonce()
+            ], '');
+            $csp = $tr->getContentSecurityPolicy();
+            $csp->addAllowedScriptDomain('https://hcaptcha.com/');
+            $csp->addAllowedScriptDomain('https://*.hcaptcha.com/');
+            $csp->addAllowedFrameDomain('https://hcaptcha.com/');
+            $csp->addAllowedFrameDomain('https://*.hcaptcha.com/');
+            $csp->addAllowedStyleDomain('https://hcaptcha.com/');
+            $csp->addAllowedStyleDomain('https://*.hcaptcha.com/');
+            $csp->addAllowedConnectDomain('https://hcaptcha.com/');
+            $csp->addAllowedConnectDomain('https://*.hcaptcha.com/');
+            $tr->setContentSecurityPolicy($csp);
+            $params['hCapKey'] = $settings[BackendUtils::SEC_HCAP_SITE_KEY];
+        }
 
         // google recaptcha
         // 'jsfiles'=>['https://www.google.com/recaptcha/api.js']
@@ -1155,6 +1261,8 @@ class PageController extends Controller
             "phone_required:" . $this->l->t('Phone number is required.') . "," .
             "required:" . $this->l->t('Required.') . "," .
             "number_required:" . $this->l->t('Number required.');
+
+        $params['zones_file'] = $this->urlGenerator->linkTo(Application::APP_ID, 'ajax/zones.js');
 
         $tr->setParams($params);
 
@@ -1333,5 +1441,60 @@ class PageController extends Controller
             && !$this->userSession->isLoggedIn()) {
             throw new NotLoggedInException();
         }
+    }
+
+    /**
+     * @param array $post
+     * @return int
+     *  0 = OK,
+     *  1 = captcha error,
+     *  2 = internal error
+     */
+    private function validateHCaptcha(array $post, array $settings): int
+    {
+        if (empty($post['h-captcha-response'])) {
+            return 1;
+        }
+
+        $clientService = \OC::$server->get(IClientService::class);
+        $client = $clientService->newClient();
+
+        try {
+            $res = $client->post('https://api.hcaptcha.com/siteverify', [
+                    'form_params' => [
+                        'response' => $post['h-captcha-response'],
+                        'secret' => $this->utils->decrypt(substr($settings[BackendUtils::SEC_HCAP_SECRET], 8), $this->utils->getLocalHash()),
+                        'sitekey' => $settings[BackendUtils::SEC_HCAP_SITE_KEY]
+                    ]]
+            );
+
+            $body = json_decode($res->getBody(), true);
+            if ($body === null) {
+                throw new \Exception("cannot parse response");
+            }
+        } catch (\Throwable $e) {
+            $this->logger->error("hCaptcha post error: ", [
+                'app' => Application::APP_ID,
+                'exception' => $e
+            ]);
+            return 2;
+        }
+
+        if ($body['success'] === true) {
+            return 0;
+        }
+
+        if (isset($body['error-codes']) && count(array_intersect([
+                'missing-input-secret',
+                'invalid-input-secret',
+                'sitekey-secret-mismatch'
+            ], $body['error-codes'])) !== 0) {
+
+            $this->logger->error("hCaptcha internal error: " . var_export($body['error-codes'], true), [
+                'app' => Application::APP_ID
+            ]);
+            return 2;
+        }
+        return 1;
     }
 }

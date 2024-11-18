@@ -17,6 +17,7 @@ use OCP\EventDispatcher\IEventListener;
 use OCP\IConfig;
 use OCP\IDBConnection;
 use OCP\IUserManager;
+use OCP\L10N\IFactory;
 use OCP\Mail\IEMailTemplate;
 use OCP\Mail\IMailer;
 use OCP\Mail\IMessage;
@@ -43,11 +44,13 @@ class DavListener implements IEventListener
 
     private $linkify;
 
+    private $l10nFactory;
+
     public function __construct(\OCP\IL10N      $l10N,
+                                IFactory        $l10nFactory,
                                 LoggerInterface $logger,
                                 BackendUtils    $utils)
     {
-        $this->appName = Application::APP_ID;
         $this->l10N = $l10N;
         $this->logger = $logger;
         $this->utils = $utils;
@@ -56,6 +59,8 @@ class DavListener implements IEventListener
         $this->config = \OC::$server->get(IConfig::class);
 
         $this->linkify = new Linkify();
+
+        $this->l10nFactory = $l10nFactory;
     }
 
     function handle(Event $event): void
@@ -199,7 +204,7 @@ class DavListener implements IEventListener
                     continue;
                 }
 
-                $extNotifyFilePath = $config->getAppValue($this->appName, 'ext_notify_' . $userId);
+                $extNotifyFilePath = $config->getAppValue(Application::APP_ID, 'ext_notify_' . $userId);
 
                 $otherCalId = '-1';
                 $calId = $utils->getMainCalId($userId, null, $otherCalId);
@@ -356,7 +361,7 @@ class DavListener implements IEventListener
                                 if ($has_link) {
                                     $this->addVideoLinkInfo(
                                         $userId, $tmpl, $doc, $settings,
-                                        $config->getUserValue($userId, $this->appName, "c" . "nk")
+                                        $config->getUserValue($userId, Application::APP_ID, "c" . "nk")
                                     );
                                 }
                                 $this->addTypeChangeLink($tmpl, $settings, $btn_url . "3" . $btn_tkn, $has_link);
@@ -395,7 +400,7 @@ class DavListener implements IEventListener
                                         // add talk link info
                                         $this->addTalkInfo(
                                             $tmpl, $xad, $ti, $settings,
-                                            $config->getUserValue($userId, $this->appName, "c" . "nk"));
+                                            $config->getUserValue($userId, Application::APP_ID, "c" . "nk"));
                                     }
                                     $this->addTypeChangeLink($tmpl, $settings, $btn_url . "3" . $btn_tkn, $has_link);
                                 }
@@ -666,6 +671,19 @@ class DavListener implements IEventListener
 
         $tmpl = $this->getEmailTemplate();
 
+
+        if (!empty($userId) && empty($this->config->getSystemValue('force_language', false))) {
+            // https://github.com/SergeyMosin/Appointments/issues/158
+            // $this->l10N is initialized with attendee's lang/locale
+            // which might be different from organizer's
+            $userLang = $this->config->getUserValue($userId, 'core', 'lang', null);
+            $userLocale = $this->config->getUserValue($userId, 'core', 'locale', null);
+
+            $organizerL10n = $this->l10nFactory->get(Application::APP_ID, $userLang, $userLocale);
+        } else {
+            $organizerL10n = $this->l10N;
+        }
+
         // Message the organizer
         $om_prefix = "";
         // Description can get overwritten when the .ics attachment is constructed, so get it here
@@ -717,7 +735,7 @@ class DavListener implements IEventListener
             }
 
             if ($settings[BackendUtils::EML_MREQ]) {
-                $om_prefix = $this->l10N->t("Appointment pending");
+                $om_prefix = $organizerL10n->t("Appointment pending");
             }
 
         } elseif ($hint === HintVar::APPT_CONFIRM) {
@@ -746,7 +764,7 @@ class DavListener implements IEventListener
 
                     $talk_link_txt = $this->addVideoLinkInfo(
                         $userId, $tmpl, $doc, $settings,
-                        $config->getUserValue($userId, $this->appName, "c" . "nk")
+                        $config->getUserValue($userId, Application::APP_ID, "c" . "nk")
                     );
 
                     if (($videoType === self::VIDEO_TALK
@@ -772,7 +790,7 @@ class DavListener implements IEventListener
                             // add talk link info
                             $talk_link_txt = $this->addTalkInfo(
                                 $tmpl, $xad, $ti, $settings,
-                                $config->getUserValue($userId, $this->appName, "c" . "nk"));
+                                $config->getUserValue($userId, Application::APP_ID, "c" . "nk"));
                         }
 
                         if ($settings[BackendUtils::TALK_FORM_ENABLED] === true) {
@@ -797,7 +815,7 @@ class DavListener implements IEventListener
             }
 
             if ($settings[BackendUtils::EML_MCONF]) {
-                $om_prefix = $this->l10N->t("Appointment confirmed");
+                $om_prefix = $organizerL10n->t("Appointment confirmed");
             }
 
             $ext_event_type = 0;
@@ -826,7 +844,7 @@ class DavListener implements IEventListener
             $is_cancelled = true;
 
             if ($settings[BackendUtils::EML_MCNCL] && $hint !== HintVar::APPT_NONE) {
-                $om_prefix = $this->l10N->t("Appointment canceled");
+                $om_prefix = $organizerL10n->t("Appointment canceled");
             }
 
             if ($isDelete) {
@@ -883,7 +901,7 @@ class DavListener implements IEventListener
 
                 $talk_link_txt = $this->addVideoLinkInfo(
                     $userId, $tmpl, $doc, $settings,
-                    $config->getUserValue($userId, $this->appName, "c" . "nk")
+                    $config->getUserValue($userId, Application::APP_ID, "c" . "nk")
                 );
             } elseif (!empty($xad) && count($xad) > 4) {
 
@@ -898,7 +916,7 @@ class DavListener implements IEventListener
                 $ti = new TalkIntegration($settings, $utils);
                 $talk_link_txt = $this->addTalkInfo(
                     $tmpl, $xad, $ti, $settings,
-                    $config->getUserValue($userId, $this->appName, "c" . "nk"));
+                    $config->getUserValue($userId, Application::APP_ID, "c" . "nk"));
             }
 
             $this->addTypeChangeLink($tmpl, $settings, $btn_url . "3" . $btn_tkn, $has_link);
@@ -906,7 +924,7 @@ class DavListener implements IEventListener
             $cnl_lnk_url = $btn_url . "0" . $btn_tkn;
 
             if ($settings[BackendUtils::EML_MCONF]) {
-                $om_prefix = $this->l10N->t("Appointment updated");
+                $om_prefix = $organizerL10n->t("Appointment updated");
             }
 
             $ext_event_type = 3;
@@ -1006,7 +1024,7 @@ class DavListener implements IEventListener
                     if ($has_link) {
                         $talk_link_txt = $this->addVideoLinkInfo(
                             $userId, $tmpl, $doc, $settings,
-                            $config->getUserValue($userId, $this->appName, "c" . "nk")
+                            $config->getUserValue($userId, Application::APP_ID, "c" . "nk")
                         );
                     }
                     $this->addTypeChangeLink($tmpl, $settings, $btn_url . "3" . $btn_tkn, $has_link);
@@ -1019,7 +1037,7 @@ class DavListener implements IEventListener
                         // add talk link info
                         $talk_link_txt = $this->addTalkInfo(
                             $tmpl, $xad, $ti, $settings,
-                            $config->getUserValue($userId, $this->appName, "c" . "nk"));
+                            $config->getUserValue($userId, Application::APP_ID, "c" . "nk"));
                     }
                     $this->addTypeChangeLink($tmpl, $settings, $btn_url . "3" . $btn_tkn, $has_link);
                 }
@@ -1203,11 +1221,11 @@ class DavListener implements IEventListener
                 $tmpl = $this->getEmailTemplate();
 
                 $tmpl->setSubject($om_prefix . ": " . $to_name . ", "
-                    . $utils->getDateTimeString($evt_dt, $utz_info, 1));
+                    . $utils->getDateTimeString($evt_dt, $utz_info, 1, $organizerL10n));
                 $tmpl->addHeading(" "); // spacer
                 $tmpl->addBodyText(...$this->formatEmailBodyHtml([$om_prefix]));
                 $tmpl->addBodyListItem(...$this->formatEmailListItem(
-                    $utils->getDateTimeString($evt_dt, $utz_info)));
+                    $utils->getDateTimeString($evt_dt, $utz_info, 0, $organizerL10n)));
                 $ic = 0;
                 foreach ($oma as $info) {
                     if (strlen($info) > 2) {
@@ -1247,7 +1265,7 @@ class DavListener implements IEventListener
 
         // advanced/extensions
         if ($ext_event_type >= 0) {
-            $filePath = $config->getAppValue($this->appName, 'ext_notify_' . $userId);
+            $filePath = $config->getAppValue(Application::APP_ID, 'ext_notify_' . $userId);
             if ($filePath !== "") {
                 $data = [
                     'eventType' => $ext_event_type,
@@ -1274,7 +1292,7 @@ class DavListener implements IEventListener
      */
     private function makeBtnInfo($userId, $pageId, $embed, $uri, $config)
     {
-        $key = hex2bin($config->getAppValue($this->appName, 'hk'));
+        $key = hex2bin($config->getAppValue(Application::APP_ID, 'hk'));
         if (empty($key)) {
             return ["", ""];
         }
@@ -1289,7 +1307,7 @@ class DavListener implements IEventListener
             . 'cncf?d=';
         if ($embed) {
             $btn_url = $config->getAppValue(
-                $this->appName,
+                Application::APP_ID,
                 'emb_cncf_' . $userId, $btn_url);
             $pageIdParam = "&pageId=" . $pageId;
         }
@@ -1629,7 +1647,7 @@ class DavListener implements IEventListener
      */
     private function setFromAddress($msg, $userId, $org_email, $org_name)
     {
-        if ($this->config->getAppValue($this->appName,
+        if ($this->config->getAppValue(Application::APP_ID,
                 BackendUtils::KEY_USE_DEF_EMAIL,
                 'yes') === 'no') {
             $email = $org_email;

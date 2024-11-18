@@ -112,7 +112,7 @@ class BackendUtils
     // this is global prep time (Minimum lead time)
     public const CLS_PREP_TIME = 'prepTime';
 
-    // per-appointment block times for pending or booked appointmets
+    // per-appointment block times for pending or booked appointments
     public const CLS_BUFFER_BEFORE = 'bufferBefore';
     public const CLS_BUFFER_AFTER = 'bufferAfter';
 
@@ -147,6 +147,7 @@ class BackendUtils
     public const PSN_USE_NC_THEME = "useNcTheme";
     public const PSN_PREFILL_INPUTS = "prefillInputs";
     public const PSN_PREFILLED_TYPE = "prefilledType";
+    public const PSN_FORM_FINISH_TEXT = "formFinishText";
 
     public const PAGES_ENABLED = "enabled";
     public const PAGES_LABEL = "label";
@@ -192,6 +193,11 @@ class BackendUtils
     public const REMINDER_BJM = "bjm";
     public const REMINDER_CLI_URL = "cliUrl";
     public const REMINDER_LANG = "defaultLang";
+
+    public const SEC_HCAP_SITE_KEY = "secHcapSiteKey";
+    public const SEC_HCAP_SECRET = "secHcapSecret";
+    public const SEC_HCAP_ENABLED = "secHcapEnabled";
+    public const SEC_EMAIL_BLACKLIST = "secEmailBlacklist";
 
     public const DEBUGGING_MODE = "debugging_mode";
     public const DEBUGGING_NONE = 0;
@@ -1404,6 +1410,7 @@ class BackendUtils
             self::PSN_PREFILL_INPUTS => 0,
             // 0=show as regular inputs, 1=disable prefilled, 2=hide prefilled
             self::PSN_PREFILLED_TYPE => 0,
+            self::PSN_FORM_FINISH_TEXT=>'',
 
             self::KEY_TMPL_DATA => [[], [], [], [], [], [], []],
             self::KEY_TMPL_INFO => [
@@ -1439,6 +1446,11 @@ class BackendUtils
             self::BBB_PASSWORD => false,
             self::BBB_FORM_ENABLED => false,
             self::BBB_INTEGRATION_DISABLED => false,
+
+            self::SEC_HCAP_SITE_KEY => '',
+            self::SEC_HCAP_SECRET => '',
+            self::SEC_HCAP_ENABLED => false,
+            self::SEC_EMAIL_BLACKLIST => [],
 
             self::KEY_REMINDERS => [
                 self::REMINDER_DATA => [
@@ -1743,6 +1755,12 @@ class BackendUtils
 
         if ($key === self::KEY_REMINDERS) {
             return $this->setUserReminders($userId, $pageId, $value);
+        } elseif ($key === self::SEC_HCAP_SECRET && !empty($value)) {
+            if(str_starts_with($value, '::hash::')){
+                // already hashed
+                return [200, ''];
+            }
+            $value = '::hash::' . $this->encrypt($value, $this->getLocalHash());
         }
 
         $settings = $this->settings;
@@ -2050,9 +2068,11 @@ class BackendUtils
      *      0 = long format
      *      1 = short format (for email subject)
      */
-    function getDateTimeString(\DateTimeImmutable $date, string $tzi, int $short_dt = 0): string
+    function getDateTimeString(\DateTimeImmutable $date, string $tzi, int $short_dt = 0, $l10N = null): string
     {
-        $l10N = $this->l10n;
+        if ($l10N === null) {
+            $l10N = $this->l10n;
+        }
         if ($tzi[0] === "F") {
             $d = $date->format('Ymd\THis');
             if ($short_dt === 0) {
@@ -2135,6 +2155,11 @@ class BackendUtils
             substr($s1, 0, $ivlen)
         );
         return $t === false ? '' : $t;
+    }
+
+    public function getLocalHash(): string
+    {
+        return hash('md5', \OC_Util::getInstanceId() . $this->config->getAppValue(Application::APP_ID, 'hk', Application::APP_ID), true);
     }
 
 
