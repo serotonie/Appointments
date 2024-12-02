@@ -19,5 +19,8 @@ jobs:
       with:
           version: 9
 
-    - name: Install dependencies
+    - name: setup
+      run: make dev-setup
+
+    - name: build
       run: make appstore
