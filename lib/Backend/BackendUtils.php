@@ -346,11 +346,6 @@ class BackendUtils
         }
         $evt->DESCRIPTION->setValue($dsr);
 
-        if (!isset($evt->STATUS)) {
-            $evt->add('STATUS');
-        }
-        $evt->STATUS->setValue("CONFIRMED");
-
         if (!isset($evt->TRANSP)) {
             $evt->add('TRANSP');
         }
@@ -542,7 +537,7 @@ class BackendUtils
     function dataConfirmAttendee(string $data, string $userId, string $pageId): array
     {
 
-        $vo = $this->getAppointment($data, 'CONFIRMED');
+        $vo = $this->getAppointment($data, 'TENTATIVE');
         if ($vo === null) {
             return [null, null, ""];
         }
@@ -554,6 +549,11 @@ class BackendUtils
         if ($a === null) {
             return [null, null, ""];
         }
+
+        if (!isset($evt->STATUS)) {
+            $evt->add('STATUS');
+        }
+        $evt->STATUS->setValue("CONFIRMED");
 
         $presetTitle = "";
         if (isset($evt->{ApptDocProp::PROP_NAME})) {
@@ -996,7 +996,7 @@ class BackendUtils
     function dataDeleteAppt(string $data): array
     {
         $f = "";
-        $vo = $this->getAppointment($data, 'CONFIRMED');
+        $vo = $this->getAppointment($data, '*');
         if ($vo === null) {
             return ['', '', $f, ''];
         }
@@ -1959,6 +1959,7 @@ class BackendUtils
                 "PRODID:-//IDN nextcloud.com//Appointments App | srgdev.com//EN\r\n" .
                 "CALSCALE:GREGORIAN\r\n" .
                 "VERSION:2.0\r\n" .
+                $tz_data .
                 "BEGIN:VEVENT\r\n" .
                 "SUMMARY:" . $summary . $rn .
                 "STATUS:TENTATIVE\r\n" .
@@ -1973,7 +1974,7 @@ class BackendUtils
             '4_last' => $tz_Z . $rn
                 . $this->chunk_split_unicode("ORGANIZER;CN=" . $name . ":mailto:" . $email, 75, "\r\n ") . $rn
                 . (!empty($addr) ? ($this->chunk_split_unicode("LOCATION:" . $addr, 75, "\r\n ") . $rn) : '')
-                . "END:VEVENT\r\n" . $tz_data . "END:VCALENDAR\r\n"
+                . "END:VEVENT\r\nEND:VCALENDAR\r\n"
         ];
     }
 
