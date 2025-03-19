@@ -304,7 +304,7 @@ class PageController extends Controller
 
         $dParam = substr($pd, 1);
         if ($dParam === self::TEST_TOKEN_CNF) {
-            // shortcircut to testing
+            // short-circuit to testing
             $a = '-' . $a;
         } else {
             $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
@@ -327,6 +327,13 @@ class PageController extends Controller
         // take action automatically if "Skip email verification step" is set
         $take_action = $a === '2';
         $appt_action_url_hash = '';
+
+        // https://github.com/SergeyMosin/Appointments/issues/293#issuecomment-2725069371
+        if ($this->request->getMethod() === 'HEAD') {
+            // 'b' === bot
+            $a = 'b' . $a;
+        }
+
         // issue https://github.com/SergeyMosin/Appointments/issues/293
         if (!$take_action) {
             // we only take action if we have $dh param and $dh matches $pd adler32 hash
@@ -384,7 +391,7 @@ class PageController extends Controller
                     // Emails are handled by the DavListener... set the Hint
                     HintVar::setHint(HintVar::APPT_CONFIRM);
 
-                    list($sts, $date_time, $attendeeName) = $this->bc->confirmAttendee($userId, $pageId, $cal_id, $uri);
+                    list($sts, $date_time, $attendeeName, $attendeeEmail) = $this->bc->confirmAttendee($userId, $pageId, $cal_id, $uri);
 
                     if ($sts === 0) {
                         // Appointment is confirmed successfully
@@ -396,7 +403,7 @@ class PageController extends Controller
                         if (($data = $this->bc->getObjectData($otherCalId, $uri)) !== null) {
                             // this appointment is confirmed already
 
-                            list($date_time, $state, $attendeeName) = $this->utils->dataApptGetInfo($data);
+                            list($date_time, $state, $attendeeName, $attendeeEmail) = $this->utils->dataApptGetInfo($data);
 
                             if ($date_time !== null && $state === BackendUtils::PREF_STATUS_CONFIRMED) {
                                 $sts = 0;
@@ -418,7 +425,7 @@ class PageController extends Controller
                         $data = $this->bc->getObjectData($otherCalId, $uri);
                     }
 
-                    list($date_time, $state, $attendeeName) = $this->utils->dataApptGetInfo($data);
+                    list($date_time, $state, $attendeeName, $attendeeEmail) = $this->utils->dataApptGetInfo($data);
 
                     if ($date_time === null) {
                         // error
@@ -452,6 +459,7 @@ class PageController extends Controller
                         }
                         if ($settings[BackendUtils::ORG_CONFIRMED_RDR_DATA] === true) {
                             $d["name"] = $attendeeName;
+                            $d["email"] = $attendeeEmail ?? null;
                             $d["dateTimeString"] = $date_time;
                         }
 
@@ -588,6 +596,18 @@ class PageController extends Controller
                     }
                 }
             }
+        } elseif ($a[0] === 'b') {
+            // bot
+            $this->logger->warning('bot detected on cncf page, remote address: ' . $this->request->getRemoteAddress());
+
+            // display a dummy confirm page just incase
+            $sts = 0;
+            $date_time = $this->utils->getDateTimeString(
+                new \DateTimeImmutable('now'),
+                '_UTC'
+            );
+            $page_text = $this->makeConfirmedPageText($date_time, '');
+            $tr_params['appt_c_more'] = $settings[BackendUtils::PSN_FORM_FINISH_TEXT];
         } elseif ($a[0] === '-') {
             // testing
             $sts = 0;
@@ -646,6 +666,8 @@ class PageController extends Controller
 
         $tr->setParams($tr_params);
         $tr->setStatus($tr_sts);
+
+        $tr->addHeader('X-Robots-Tag', 'noindex, nofollow');
 
         return $tr;
     }
@@ -1098,7 +1120,7 @@ class PageController extends Controller
             'application' => $this->l->t('Appointments'),
             'translations' => '',
             'hCapKey' => '',
-            'zones_file'=>'',
+            'zones_file' => '',
         ];
 
         if ($settings[BackendUtils::SEC_HCAP_ENABLED] === true
