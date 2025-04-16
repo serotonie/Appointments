@@ -24,3 +24,6 @@ jobs:
 
     - name: build
       run: make appstore
+
+    - name: ownership for deployment
+      run: sudo chown -R 33:root -R .
