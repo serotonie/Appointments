@@ -10,9 +10,7 @@
 		}
 	},
 	"postCreateCommand": "sudo apt-get update && sudo apt-get upgrade -y && sudo apt-get install -y python3",
-	"postStartCommand": "npm install && npm run build"
-	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
+	"postStartCommand": "npm install -g npm@10 && npm install && npm run build"
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
 	// Configure tool-specific properties.

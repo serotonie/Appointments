@@ -13,14 +13,14 @@ all: dev-setup build-prod test-php
 dev-setup: clean clean-dev npm-init
 
 npm-init:
-	pnpm install
+	npm install
 
 composer-init:
 	composer install --prefer-dist
 	composer update --prefer-dist
 
 npm-update:
-	pnpm update
+	npm update
 
 # Cleaning
 clean:
@@ -31,10 +31,10 @@ clean-dev:
 
 # Building
 build-dev:
-	pnpm run dev
+	npm run dev
 
 build-prod: clean
-	pnpm run build
+	npm run build
 
 test-php:
 	phpunit -c phpunit.xml
