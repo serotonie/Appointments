@@ -34,6 +34,7 @@ OC.L10N.register(
     "12 Hours" : "12 Jam",
     "1 day" : "1 hari",
     "Simple" : "Sederhana",
+    "External" : "Eksternal",
     "15 minutes" : "15 menit",
     "30 minutes" : "30 Menit",
     "1 hour" : "1 jam",
@@ -58,7 +59,7 @@ OC.L10N.register(
     "Next" : "Berikutnya",
     "min" : "min",
     "Full Name" : "Nama Lengkap",
-    "Email" : "Surel",
+    "Email" : "Email",
     "An error has occurred" : "Sebuah kesalahan yang terjadi"
 },
 "nplurals=1; plural=0;");
