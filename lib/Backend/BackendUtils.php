@@ -29,7 +29,6 @@ class BackendUtils
 
     const APPT_CAT = "Appointment";
     const TZI_PROP = "X-TZI";
-    const XAD_PROP = "X-APPT-DATA";
     // original description
     const X_DSR = "X-APPT-DSR";
 
@@ -359,55 +358,15 @@ class BackendUtils
         }
         $evt->TRANSP->setValue("OPAQUE");
 
-        if (!isset($evt->{self::XAD_PROP})) {
-
-            // -----
-            $doc = $this->getApptDoc($evt);
-            $doc->attendeeTimezone = $info['tzi'] ?? 'UTC';
-            $doc->title = $title;
-            $doc->embed = $info['_embed'];
-            $doc->inPersonType = isset($info['type_override']);
-            // original description
-            $doc->description = $dsr;
-            // -----
-
-        } else { // TODO: remove soon
-            // legacy
-
-            if (!isset($evt->{self::X_DSR})) {
-                $evt->add(self::X_DSR);
-            }
-            $evt->{self::X_DSR}->setValue($dsr);
-
-            // Attendee's timezone info at the time of booking
-            if (!isset($evt->{self::TZI_PROP})) {
-                $evt->add(self::TZI_PROP);
-            }
-            $evt->{self::TZI_PROP}->setValue($info['tzi']);
-
-            // isset($info['talk_type_real']) === No need for Talk room
-
-            // Additional appointment info (XAD_PROP):
-            //  0: userId
-            //  1: _title
-            //  2: pageId
-            //  3: embed (uri)
-            //  4: reserved for Talk link @see $this->dataConfirmAttendee()
-            //      'd' === add self::TALK_FORM_REAL_TXT to description - no need for Talk room
-            //      '_' === check if Talk room is needed
-            //      'f' === finished
-            //  5: reserved for Talk pass @see $this->dataConfirmAttendee()
-            $evt->{self::XAD_PROP}->setValue($this->encrypt(
-                $userId . chr(31)
-                    . $title . chr(31)
-                    . $info['_page_id'] . chr(31)
-                    . $info['_embed'] . chr(31)
-                    // talk link, if isset($info['talk_type_real']) means no need for talk room, @see PageController->showFormPost()
-                    . (isset($info['talk_type_real']) ? 'd' : '_') . chr(31)
-                    . '_', // talk pass
-                $evt->UID
-            ));
-        }
+        // -----
+        $doc = $this->getApptDoc($evt);
+        $doc->attendeeTimezone = $info['tzi'] ?? 'UTC';
+        $doc->title = $title;
+        $doc->embed = $info['_embed'];
+        $doc->inPersonType = isset($info['type_override']);
+        // original description
+        $doc->description = $dsr;
+        // -----
 
         $this->setSEQ($evt);
 
@@ -433,105 +392,46 @@ class BackendUtils
         /** @var \Sabre\VObject\Component\VEvent $evt */
         $evt = $vo->VEVENT;
 
-        if (isset($evt->{ApptDocProp::PROP_NAME})) {
-
-            // @see BackendUtils->dataSetAttendee for more info
-            $apptDoc = $this->getApptDoc($evt);
-            if (empty($apptDoc->_evtUid)) {
-                // something went wrong
-                return $r;
-            }
-
-            $a = $this->getAttendee($evt);
-            if ($a === null) {
-                return $r;
-            }
-
-            $settings = $this->getUserSettings();
-            if ($noChanges) {
-                $r[0] = $this->getNameForType(!$apptDoc->inPersonType, $settings);
-                return $r;
-            }
-
-            if ($apptDoc->inPersonType) {
-                // switching from inPerson -> Virtual
-                $apptDoc->inPersonType = false;
-            } else {
-                // switching from Virtual -> inPerson
-
-                // checking both TALK and BBB just in-case
-                if ($apptDoc->talkToken !== '') {
-                    $ti = new TalkIntegration($settings, $this);
-                    $ti->deleteRoom($apptDoc->talkToken);
-                }
-                if ($apptDoc->bbbToken !== '') {
-                    $di = \OC::$server->get(BbbIntegration::class);
-                    $di->deleteRoom($apptDoc->bbbToken, $userId);
-                }
-                $apptDoc->inPersonType = true;
-            }
-
-            $new_type = $this->addEvtLocationOrVideoLink($userId, $evt, $a);
-            $this->saveApptDoc($apptDoc, $evt);
-            $r[0] = $new_type;
-            $r[1] = $vo->serialize();
-        } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
-            // TODO: remove soon
-            // legacy
-
-            // @see BackendUtils->dataSetAttendee for BackendUtils::XAD_PROP
-            $xad = explode(chr(31), $this->decrypt(
-                $evt->{BackendUtils::XAD_PROP}->getValue(),
-                $evt->UID->getValue()
-            ));
-
-            if (count($xad) > 4) {
-
-                $a = $this->getAttendee($evt);
-                if ($a === null) {
-                    return $r;
-                }
-
-                if ($xad[4] === 'f') {
-                    // the appointment was previously finalized as "in-person ..."
-                    if ($noChanges) {
-                        $settings = $this->getUserSettings();
-                        // new_type = virtual
-                        $r[0] = (!empty($settings[self::TALK_FORM_VIRTUAL_TXT])
-                            ? $settings[self::TALK_FORM_VIRTUAL_TXT]
-                            : $settings[self::TALK_FORM_DEF_VIRTUAL]);
-                        return $r;
-                    }
-
-                    // ... so, set $xad[4]='_' @see BackendUtils->dataSetAttendee
-                    // this will add a talk room and description when addTalkInfo is called
-                    $xad[4] = '_';
-                } elseif (strlen($xad[4]) > 1) {
-                    // this was a virtual appointment...
-                    // ... $xad[4] is the room token.
-
-                    $settings = $this->getUserSettings();
-
-                    if ($noChanges) {
-                        $r[0] = (!empty($settings[self::TALK_FORM_REAL_TXT])
-                            ? $settings[self::TALK_FORM_REAL_TXT]
-                            : $settings[self::TALK_FORM_DEF_REAL]);
-                        return $r;
-                    }
-
-                    // delete the room first...
-                    $ti = new TalkIntegration($settings, $this);
-                    $ti->deleteRoom($xad[4]);
-
-                    // set $xad[4]='d' which will just and description @see BackendUtils->dataSetAttendee
-                    $xad[4] = 'd';
-                }
-
-                $new_type = $this->addEvtTalkInfo($userId, $xad, $evt, $a);
-                $r[0] = $new_type;
-                $r[1] = $vo->serialize();
-            }
+        // @see BackendUtils->dataSetAttendee for more info
+        $apptDoc = $this->getApptDoc($evt);
+        if (empty($apptDoc->_evtUid)) {
+            // something went wrong
+            return $r;
         }
+
+        $a = $this->getAttendee($evt);
+        if ($a === null) {
+            return $r;
+        }
+
+        $settings = $this->getUserSettings();
+        if ($noChanges) {
+            $r[0] = $this->getNameForType(!$apptDoc->inPersonType, $settings);
+            return $r;
+        }
+
+        if ($apptDoc->inPersonType) {
+            // switching from inPerson -> Virtual
+            $apptDoc->inPersonType = false;
+        } else {
+            // switching from Virtual -> inPerson
+
+            // checking both TALK and BBB just in-case
+            if ($apptDoc->talkToken !== '') {
+                $ti = new TalkIntegration($settings, $this);
+                $ti->deleteRoom($apptDoc->talkToken);
+            }
+            if ($apptDoc->bbbToken !== '') {
+                $di = \OC::$server->get(BbbIntegration::class);
+                $di->deleteRoom($apptDoc->bbbToken, $userId);
+            }
+            $apptDoc->inPersonType = true;
+        }
+
+        $new_type = $this->addEvtLocationOrVideoLink($userId, $evt, $a);
+        $this->saveApptDoc($apptDoc, $evt);
+        $r[0] = $new_type;
+        $r[1] = $vo->serialize();
 
         return $r;
     }
@@ -546,7 +446,7 @@ class BackendUtils
     function dataConfirmAttendee(string $data, string $userId, string $pageId): array
     {
 
-        $vo = $this->getAppointment($data, 'TENTATIVE');
+        $vo = $this->getAppointment($data, 'TENTATIVE|CONFIRMED');
         if ($vo === null) {
             return [null, null, "", ""];
         }
@@ -572,17 +472,6 @@ class BackendUtils
             $dts = $this->getDateTimeString(
                 $evt->DTSTART->getDateTime(),
                 $apptDoc->attendeeTimezone
-            );
-        } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
-            // @see BackendUtils->dataSetAttendee for BackendUtils::XAD_PROP
-            $xad = explode(chr(31), $this->decrypt(
-                $evt->{BackendUtils::XAD_PROP}->getValue(),
-                $evt->UID->getValue()
-            ));
-
-            $dts = $this->getDateTimeString(
-                $evt->DTSTART->getDateTime(),
-                $evt->{self::TZI_PROP}->getValue()
             );
         } else {
             return [null, null, "", ""];
@@ -611,12 +500,7 @@ class BackendUtils
         ));
 
         //Talk link
-        if (isset($evt->{ApptDocProp::PROP_NAME})) {
-            $this->addEvtLocationOrVideoLink($userId, $evt, $a);
-        } else {
-            // legacy: remove soon
-            $this->addEvtTalkInfo($userId, $xad, $evt, $a);
-        }
+        $this->addEvtLocationOrVideoLink($userId, $evt, $a);
 
         $this->setSEQ($evt);
 
@@ -635,7 +519,7 @@ class BackendUtils
      */
     function dataApptGetInfo(?string $data): array
     {
-        $ret = [null, self::PREF_STATUS_TENTATIVE, ""];
+        $ret = [null, self::PREF_STATUS_TENTATIVE, "", ""];
 
         if ($data === null) {
             return $ret;
@@ -686,77 +570,6 @@ class BackendUtils
         $ret[3] = $attendeeEmailMailto ? substr($attendeeEmailMailto, strpos($attendeeEmailMailto, ':') + 1) : '';
 
         return $ret;
-    }
-
-    /**
-     * @return string new appointment type virtual/in-person (from talk settings)
-     */
-    private function addEvtTalkInfo(string $userId, array $xad, \Sabre\VObject\Component\VEvent $evt, \Sabre\VObject\Property|null $attendee): string
-    {
-        $r = '';
-
-        $settings = $this->getUserSettings();
-
-        if (count($xad) > 4) {
-            if ($xad[4] === '_') {
-                // check if Talk link is needed
-                if ($settings[self::TALK_ENABLED] === true) {
-                    $ti = new TalkIntegration($settings, $this);
-                    $token = $ti->createRoomForEvent(
-                        $attendee->parameters['CN']->getValue(),
-                        $evt->DTSTART,
-                        $userId
-                    );
-                    if (!empty($token)) {
-
-                        $l10n = $this->l10n;
-                        if ($token !== "-") {
-                            $pi = '';
-                            if (!str_contains($token, chr(31))) {
-                                // just token
-                                $xad[4] = $token;
-                            } else {
-                                // taken + pass
-                                list($xad[4], $xad[5]) = explode(chr(31), $token);
-                                $pi = "\n" . $l10n->t("Guest password:") . " " . $xad[5];
-                                $token = $xad[4];
-                            }
-                            $evt->{self::XAD_PROP}->setValue($this->encrypt(
-                                implode(chr(31), $xad),
-                                $evt->UID
-                            ));
-
-                            $this->updateDescription($evt, "\n\n" .
-                                $ti->getRoomURL($token) . $pi);
-
-                            $r = (!empty($settings[self::TALK_FORM_VIRTUAL_TXT])
-                                ? $settings[self::TALK_FORM_VIRTUAL_TXT]
-                                : $settings[self::TALK_FORM_DEF_VIRTUAL]);
-                        } else {
-
-                            $this->updateDescription($evt, "\n\n" .
-                                $l10n->t("Talk integration error: check logs"));
-                        }
-                    }
-                }
-            } elseif ($xad[4] === 'd') {
-                // meeting type is overridden by client to real,
-                // set xad to 'f' and add self::TALK_FORM_REAL_TXT to description
-                $xad[4] = 'f';
-                $evt->{self::XAD_PROP}->setValue($this->encrypt(
-                    implode(chr(31), $xad),
-                    $evt->UID
-                ));
-
-                $r = (!empty($settings[self::TALK_FORM_REAL_TXT])
-                    ? $settings[self::TALK_FORM_REAL_TXT]
-                    : $settings[self::TALK_FORM_DEF_REAL]);
-
-                $this->updateDescription($evt, "\n\n" . $r);
-            }
-        }
-
-        return $r;
     }
 
     private function getNameForType(bool $isInPersonType, array $settings): string
@@ -1040,29 +853,14 @@ class BackendUtils
         }
 
         $title = "";
-        $dts = "";
-        if (isset($evt->{ApptDocProp::PROP_NAME})) {
-            $apptDoc = $this->getApptDoc($evt);
-            if (!empty($apptDoc->title) && $apptDoc->title[0] === '_') {
-                $title = $apptDoc->title;
-            }
-            $dts = $this->getDateTimeString(
-                $evt->DTSTART->getDateTime(),
-                $apptDoc->attendeeTimezone
-            );
-        } elseif (isset($evt->{BackendUtils::XAD_PROP})) {
-            $xad = explode(chr(31), $this->decrypt(
-                $evt->{BackendUtils::XAD_PROP}->getValue(),
-                $evt->UID->getValue()
-            ));
-            if (count($xad) > 1 && !empty($xad[1]) && $xad[1][0] === '_') {
-                $title = $xad[1];
-            }
-            $dts = $this->getDateTimeString(
-                $evt->DTSTART->getDateTime(),
-                $evt->{self::TZI_PROP}->getValue()
-            );
+        $apptDoc = $this->getApptDoc($evt);
+        if (!empty($apptDoc->title) && $apptDoc->title[0] === '_') {
+            $title = $apptDoc->title;
         }
+        $dts = $this->getDateTimeString(
+            $evt->DTSTART->getDateTime(),
+            $apptDoc->attendeeTimezone
+        );
 
         return [$dts, $dt, $f, $title];
     }
@@ -1332,7 +1130,7 @@ class BackendUtils
             return null;
         }
 
-        if (!isset($evt->STATUS) || ($status !== "*" && $evt->STATUS->getValue() !== $status)) {
+        if (!isset($evt->STATUS) || ($status !== "*" && $evt->STATUS->getValue() !== $status && !str_contains($status, $evt->STATUS->getValue()))) {
             $this->logger->error("Bad Status: must be " . $status);
             return null;
         }
