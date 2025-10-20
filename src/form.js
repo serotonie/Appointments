@@ -4,6 +4,7 @@
 	sessionStorage.setItem("tokenSwissPost", tokenSwissPost.innerHTML)
 	tokenSwissPost.remove()
 	window.addEventListener('DOMContentLoaded', formReady)
+	window.addEventListener('pageshow', resetForm);
 
 	function formReady() {
 		let gdpr = document.getElementById('appt_gdpr_id')
@@ -52,6 +53,17 @@
 			b.disabled = true;
 			b.textContent = txt
 		}, 900000)
+	}
+
+	function resetForm(evt) {
+		if (evt.persisted) {
+			let f = document.getElementById("srgdev-ncfp_frm")
+			if (f) {
+				f.reset()
+			}
+			document.getElementById("srgdev-ncfp_fbtn-spinner").style.display = "none"
+			document.getElementById("srgdev-ncfp_fbtn").disabled = false
+		}
 	}
 
 	function makePso(pps) {
@@ -276,6 +288,7 @@
 			e.stopPropagation()
 			return false
 		}
+		el.disabled = true
 
 		el = document.getElementById("srgdev-ncfp_sel-hidden")
 		let sdx = el.selectedIndex

@@ -143,6 +143,7 @@ class BackendUtils
     public const PSN_NWEEKS = "nbrWeeks";
     public const PSN_TIME2 = "time2Cols";
     public const PSN_HIDE_TEL = "hidePhone";
+    public const PSN_CNCF_DELAY = "cncfDelay";
     public const PSN_END_TIME = "endTime";
     public const PSN_SHOW_TZ = "showTZ";
     public const PSN_USE_NC_THEME = "useNcTheme";
@@ -870,6 +871,16 @@ class BackendUtils
         $r = null;
         $ao = null;
 
+        if ($evt === null) {
+            return null;
+        }
+
+        // TEMP: ref: https://github.com/SergeyMosin/Appointments/issues/626
+        if (!$evt->ORGANIZER) {
+            $this->logger->error('$evt->ORGANIZER is not set, $evt: ' . $evt->serialize());
+            return null;
+        }
+
         $ov = $evt->ORGANIZER->getValue();
         $ov = trim(substr($ov, strpos($ov, ":") + 1));
 
@@ -1213,6 +1224,7 @@ class BackendUtils
             self::PSN_TIME2 => false,
             self::PSN_END_TIME => false,
             self::PSN_HIDE_TEL => false,
+            self::PSN_CNCF_DELAY => false,
             self::PSN_SHOW_TZ => false,
             self::PSN_GDPR => "",
             self::PSN_GDPR_NO_CHB => false,
@@ -2275,5 +2287,10 @@ class BackendUtils
             return false;
         }
         return true;
+    }
+
+    function validateHHash(string $dh, string $pd): bool
+    {
+        return !isset($dh[8]) && $dh === hash('adler32', $pd, false);
     }
 }
