@@ -2187,7 +2187,7 @@ class BackendUtils
             && $this->config->getAppValue('theming', 'disable-user-theming', 'no') !== 'yes'
         ) {
 
-            $appointmentsBackgroundImage = "var(--image-background-default)";
+            $appointmentsBackgroundImage = "var(--image-background)";
             $appointmentsBackgroundColor = "transparent";
 
             // use system-wide default background color if provided
