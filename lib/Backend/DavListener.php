@@ -240,7 +240,7 @@ class DavListener implements IEventListener
                     continue;
                 }
 
-                $extNotifyFilePath = $appConfig->getValueString(Application::APP_ID, 'ext_notify_' . $userId);
+                $extNotifyFilePath = $appConfig->getValueString(Application::APP_ID, substr('ext_notify_' . $userId, 0, 64));
 
                 $otherCalId = '-1';
                 $calId = $utils->getMainCalId($userId, null, $otherCalId);
@@ -358,7 +358,7 @@ class DavListener implements IEventListener
                     }
 
                     if ($remInfo['type'] === BackendUtils::REMINDER_TYPE_CANCEL) {
-                        HintVar::setHint(HintVar::APPT_CANCEL);
+                        HintVar::setHint(HintVar::APPT_AUTO_CANCELL);
                         $bc->deleteCalendarObject($userId, $calId, $evtUri);
                         $lastDeleteUri = $evtUri;
                         $vObject->destroy();
@@ -864,7 +864,7 @@ class DavListener implements IEventListener
 
             $ext_event_type = 0;
 
-        } elseif ($hint === HintVar::APPT_CANCEL || $isDelete) {
+        } elseif ($hint === HintVar::APPT_CANCEL || $hint === HintVar::APPT_AUTO_CANCELL || $isDelete) {
             // Canceled or deleted
 
             if ($hint !== HintVar::APPT_NONE) {
@@ -1272,6 +1272,23 @@ class DavListener implements IEventListener
                         $settings[BackendUtils::PAGE_LABEL]));
                 }
 
+                if ($is_cancelled && $settings[BackendUtils::DEBUGGING_MODE] === BackendUtils::DEBUGGING_CANCELLATIONS) {
+                    $tmpl->addBodyListItem(...$this->formatEmailListItem(
+                        'debug_cncl: hint = ' . $hint
+                    ));
+                    $tmpl->addBodyListItem(...$this->formatEmailListItem(
+                        'debug_cncl: t3 = ' . (isset($_GET['t3']) && is_string($_GET['t3']) ? 'yes' : 'no')
+                    ));
+                    $tmpl->addBodyListItem(...$this->formatEmailListItem(
+                        'debug_cncl: cookie = ' . (isset($_COOKIE['appt_cncf_t1']) && is_string($_COOKIE['appt_cncf_t1']) ? 'yes' : 'no')
+                    ));
+                    $tmpl->addBodyListItem(...$this->formatEmailListItem(
+                        'debug_cncl: agent = ' . (isset($_SERVER['HTTP_USER_AGENT']) && is_string($_SERVER['HTTP_USER_AGENT'])
+                            ? base64_encode($_SERVER['HTTP_USER_AGENT'])
+                            : 'N/A')
+                    ));
+                }
+
                 $msg = $mailer->createMessage();
                 $msg->setFrom(array(\OCP\Util::getDefaultEmailAddress('appointments-noreply')));
                 $msg->setTo(array($org_email));
@@ -1291,7 +1308,7 @@ class DavListener implements IEventListener
 
         // advanced/extensions
         if ($ext_event_type >= 0) {
-            $filePath = $appConfig->getValueString(Application::APP_ID, 'ext_notify_' . $userId);
+            $filePath = $appConfig->getValueString(Application::APP_ID, substr('ext_notify_' . $userId, 0, 64));
             if ($filePath !== "") {
                 $data = [
                     'eventType' => $ext_event_type,
@@ -1332,7 +1349,7 @@ class DavListener implements IEventListener
         if ($embed) {
             $btn_url = $appConfig->getValueString(
                 Application::APP_ID,
-                'emb_cncf_' . $userId, $btn_url);
+                substr('emb_cncf_' . $userId, 0, 64), $btn_url);
             $pageIdParam = "&pageId=" . $pageId;
         }
         return [

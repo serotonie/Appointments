@@ -13,13 +13,15 @@ use OCA\Appointments\Backend\BackendManager;
 use OCA\Appointments\Backend\BackendUtils;
 use OCA\Appointments\Backend\HintVar;
 use OCA\Appointments\Backend\IBackendConnector;
+use OCA\Appointments\SendDataResponse;
 use OCP\AppFramework\Http\ContentSecurityPolicy;
 use OCP\AppFramework\Http\NotFoundResponse;
 use OCP\AppFramework\Http\RedirectResponse;
 use OCP\AppFramework\Http\Response;
 use OCP\AppFramework\Http\Template\PublicTemplateResponse;
+use OCP\Config\IUserConfig;
 use OCP\Http\Client\IClientService;
-use OCP\IConfig;
+use OCP\IAppConfig;
 use OCP\IGroupManager;
 use OCP\IL10N;
 use OCP\IRequest;
@@ -39,7 +41,8 @@ class PageController extends Controller
     const TEST_TOKEN_CNF = '3b719b44-8ec9-41e9-b161-00fb1515b1ed';
 
     private string|null $userId;
-    private IConfig $c;
+    private IAppConfig $appConfig;
+    private IUserConfig $userConfig;
     private IMailer $mailer;
     private IL10N $l;
     private IBackendConnector $bc;
@@ -49,7 +52,8 @@ class PageController extends Controller
     private IURLGenerator $urlGenerator;
 
     public function __construct(IRequest        $request,
-                                IConfig         $c,
+                                IAppConfig      $config,
+                                IUserConfig     $userConfig,
                                 IMailer         $mailer,
                                 IL10N           $l,
                                 IUserSession    $userSession,
@@ -59,7 +63,8 @@ class PageController extends Controller
                                 LoggerInterface $logger
     ) {
         parent::__construct(Application::APP_ID, $request);
-        $this->c = $c;
+        $this->appConfig = $config;
+        $this->userConfig = $userConfig;
         $this->mailer = $mailer;
         $this->l = $l;
         $this->userSession = $userSession;
@@ -83,11 +88,11 @@ class PageController extends Controller
      */
     public function index(): TemplateResponse
     {
-        $t = new TemplateResponse($this->appName, 'index');
+        $t = new TemplateResponse(Application::APP_ID, 'index');
 
         $disable = false;
         if (!empty($this->userId)) {
-            $allowedGroups = $this->c->getAppValue($this->appName,
+            $allowedGroups = $this->appConfig->getValueString(Application::APP_ID,
                 BackendUtils::KEY_LIMIT_TO_GROUPS);
             if ($allowedGroups !== '') {
                 $aga = json_decode($allowedGroups, true);
@@ -136,7 +141,7 @@ class PageController extends Controller
     {
         list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
-            $tr = new TemplateResponse($this->appName, "public/r404", [], "base");
+            $tr = new TemplateResponse(Application::APP_ID, "public/r404", [], "base");
             $tr->setStatus(404);
             return $tr;
         }
@@ -165,7 +170,7 @@ class PageController extends Controller
     {
         list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
-            $tr = new TemplateResponse($this->appName, "public/r404", [], "base");
+            $tr = new TemplateResponse(Application::APP_ID, "public/r404", [], "base");
             $tr->setStatus(404);
         }
 
@@ -188,7 +193,7 @@ class PageController extends Controller
     {
         list($userId) = $this->utils->verifyToken($this->request->getParam("token"));
         if ($userId === null) {
-            $tr = new TemplateResponse($this->appName, "public/r404", [], "base");
+            $tr = new TemplateResponse(Application::APP_ID, "public/r404", [], "base");
             $tr->setStatus(404);
         }
         $tr = $this->cncf(true);
@@ -199,9 +204,9 @@ class PageController extends Controller
     private function setEmbCsp(Response $tr, string $userId): void
     {
 
-        $ad = $this->c->getAppValue(
-            $this->appName,
-            'emb_afad_' . $userId);
+        $ad = $this->appConfig->getValueString(
+            Application::APP_ID,
+            substr('emb_afad_' . $userId, 0, 64));
         if (strlen($ad) > 3) {
             $csp = $tr->getContentSecurityPolicy();
             if ($csp === null) {
@@ -316,7 +321,8 @@ class PageController extends Controller
      */
     public function cncf(bool $embed = false): Response
     {
-        list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
+        $token = $this->request->getParam("token");
+        list($userId, $pageId) = $this->utils->verifyToken($token);
 
         $pd = $this->request->getParam("d");
         if ($userId === null || $pd === null || strlen($pd) > 512
@@ -328,36 +334,251 @@ class PageController extends Controller
 
         $dParam = substr($pd, 1);
 
-//        if ($dParam === self::TEST_TOKEN_CNF) {
-//            // short-circuit to testing
-//            $a = '-' . $a;
-//        } else {
-
-        $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
+        $key = hex2bin($this->appConfig->getValueString(Application::APP_ID, 'hk'));
         $uri = $this->utils->decrypt($dParam, $key);
         if (empty($uri)) {
             return $this->pubErrResponse($userId, $embed);
         }
         $uri .= ".ics";
 
-//        }
+        // 'f' - final step, 'v' - verify intent, 'b' - bot
+        $responseType = 'b'; // assume bot
 
-        // https://github.com/SergeyMosin/Appointments/issues/627
-        if ($this->request->getMethod() === 'POST') {
-            $dh = $this->request->getParam("h");
-            if ($dh !== null && $this->utils->validateHHash($dh, $pd)) {
-                // PRG to the next step...
-                $parsed_url = parse_url($this->request->getRequestUri());
+        $method = $this->request->getMethod();
+        if ($method === 'GET') {
+            $err = $this->request->getParam('err');
+            if ($err !== null) {
+                return $this->makeCncfResponse([], 1, $userId, $this->utils->getUserSettings(), $embed);
+            }
+            $tkn = $this->request->getParam('t3');
+            if ($tkn === null) {
+                $responseType = $a === '2'
+                    ? 'f' // go to final step automatically if "Skip email verification step" is set
+                    : 'v'; // verify that not a bot
+            } elseif (is_string($tkn) && strlen($tkn) < 192 && strlen($tkn) > 32) {
+                $tknDecrypted = $this->utils->decrypt($tkn, $key);
+                if (!empty($tknDecrypted)) {
+                    $tknData = $this->decodeTkn($tknDecrypted, $uri);
+                    if ($tknData !== null && isset($tknData[3])) {
+                        // if we are here, then most-likely not bot,
+                        // but we still need to check vo expired/malicious tokens
+                        // in order to take final action
+                        $responseType = 'v';
+                        $tc = $this->request->getCookie('appt_cncf_t1');
+                        if (!empty($tc) && $tc === substr($tkn, 0, 16)) {
+                            $ttl = (int)$tknData[3];
+                            if (time() < $ttl) {
+                                // tokens are good, finalize action
+                                $responseType = 'f';
+                            }
+                        }
+                    }
+                }
+            }
+        } elseif ($method === 'POST') {
+            if ($this->request->getParam('tos') === null) {
+                $tkn = $this->request->getParam('t1');
+                if (is_string($tkn) && strlen($tkn) < 192 && strlen($tkn) > 32) {
+                    // this an anti-bot request
+                    $tknDecrypted = $this->utils->decrypt($tkn, $key);
+                    $tknData = $this->decodeTkn($tknDecrypted, $uri);
+                    if ($tknData !== null) {
+                        if (!isset($tknData[2])) {
+                            // create [2] (add tken)
+                            $dr = new SendDataResponse();
+                            $dr->setData($this->utils->encrypt(
+                                $tknDecrypted . chr(31) . $token, $key));
+                            return $dr;
+                        } elseif ($tknData[2] === $token) {
+                            // create [3] for GET request
+                            $dr = new SendDataResponse();
+                            $dr->addHeader('X-Appt-Token', '1');
+                            $dr->setData($this->utils->encrypt(
+                                $tknDecrypted . chr(31) . (time() + 8), $key));
+                            return $dr;
+                        }
+                    }
+                }
+            }
+        }// else most likely a bot HEAD request
 
-                $hash2 = hash('adler32', $pd . $dh);
-                $new_url = $parsed_url['path'] . '?d=' . urlencode($pd) . '&h' . $dh . '=' . $hash2;
+        switch ($responseType) {
+            case 'v':
+                // user needs to confirm intended action, aka we need to show an "Are You Sure..." button
+                return $this->cncfVerifyIntent($a, $uri, $userId, $embed);
+            case 'f':
+                // TODO: check if trying to deal with a past appointment.
+                // confirm button has been clicked and verified (or skip email validation is set)
+                return $this->cncfHandleAction($a, $uri, $userId, $pageId, $embed);
+            default:
+                $this->logger->warning('bot detected on cncf page, remote address: ' . $this->request->getRemoteAddress());
+                // display a dummy confirm page
+                $date_time = $this->utils->getDateTimeString(
+                    new \DateTimeImmutable('now'),
+                    '_UTC'
+                );
+                $settings = $this->utils->getUserSettings();
+                $params = [
+                    'appt_c_msg' => $this->makeConfirmedPageText($date_time, ''),
+                    'appt_c_more' => $settings[BackendUtils::PSN_FORM_FINISH_TEXT]
+                ];
+                return $this->makeCncfResponse($params, 0, $userId, $settings, $embed);
+        }
+    }
 
-                return new RedirectResponse($new_url);
+    /**
+     * @param string $tknDecrypted
+     * @param string $uri
+     * @return array|null [ts, uri, [token], [ttl]]
+     */
+    private function decodeTkn(string $tknDecrypted, string $uri): array|null
+    {
+        if (empty($tknDecrypted) || strlen($tknDecrypted) < 32) {
+            return null;
+        }
+
+        $arr = explode(chr(31), $tknDecrypted);
+
+        $reqTs = (int)$arr[0];
+        $curTs = (int)(microtime(true) * 1000);
+        if ($reqTs + 1275 < $curTs && $curTs < $reqTs + 902000 && $arr[1] === $uri) {
+            return $arr;
+        }
+        return null;
+    }
+
+    private function cncfVerifyIntent(
+        string $action,
+        string $uri,
+        string $userId,
+        bool   $embed): Response
+    {
+        $settings = $this->utils->getUserSettings();
+
+        $otherCalId = "-1";
+        $cal_id = $this->utils->getMainCalId($userId, $this->bc, $otherCalId);
+        if ($cal_id === '-1') {
+            return $this->pubErrResponse($userId, $embed);
+        }
+
+        $data = $this->bc->getObjectData($cal_id, $uri);
+        // Confirmed appointments are in the DEST ($otherCalId) in manual mode
+        if ($data === null && $otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
+            // check DEST cal
+            $data = $this->bc->getObjectData($otherCalId, $uri);
+        }
+
+        $tr_params = ['appt_c_more' => ''];
+
+        $sts = 1; // assume error
+        $alreadyVerified = false;
+        if ($action === '1') { // verify confirmation
+
+            list($date_time, $state, $attendeeName, $attendeeEmail) = $this->utils->dataApptGetInfo($data);
+
+            if ($date_time !== null) {
+                $sts = 0;
+                if ($state === BackendUtils::PREF_STATUS_CONFIRMED) {
+                    // already confirmed
+                    $customRedirectUrl = $this->getCustomRedirectUrl(
+                        $settings,
+                        false,
+                        $uri,
+                        $attendeeName,
+                        $attendeeEmail,
+                        $date_time
+                    );
+                    if ($customRedirectUrl !== '') {
+                        return new RedirectResponse($customRedirectUrl);
+                    }
+
+                    $alreadyVerified = true;
+                    $tr_params['appt_c_msg'] = $this->getPageText($date_time, $state);
+                } else {
+                    // TRANSLATORS Ex: Please confirm your appointment scheduled for {{Friday, April 24, 2020, 12:10PM EDT}}.
+                    $tr_params['appt_c_msg'] = $this->l->t('Please confirm your appointment scheduled for %s.', [$date_time]);
+                    // TRANSLATORS This is a button label
+                    $tr_params['appt_action_url_text'] = $this->l->t("Confirm");
+//                            $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
+                }
+            }
+        } elseif ($action === '0') { // verify cancellation
+
+            $sts = 0;
+
+            list($date_time, $state) = $this->utils->dataApptGetInfo($data);
+
+            if ($date_time === null || $state === BackendUtils::PREF_STATUS_CANCELLED) {
+                // already canceled
+                $alreadyVerified = true;
+                $tr_params['appt_c_msg'] = $this->getPageText($date_time || '', BackendUtils::PREF_STATUS_CANCELLED);
             } else {
-                // something fishy is going on
-                return new NotFoundResponse();
+                // TRANSLATORS Ex: Would you like to cancel appointment scheduled for {{Friday, April 24, 2020, 12:10PM EDT}} ?
+                $tr_params['appt_c_msg'] = $this->l->t('Would you like to cancel appointment scheduled for %s ?', [$date_time]);
+                // TRANSLATORS This is a button label
+                $tr_params['appt_action_url_text'] = $this->l->t("Yes, Cancel");
+//                    $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
+            }
+        } elseif ($action === '3') { // verify appointment type change
+
+            if ($data !== null) {
+                // show the "Would you like to change..." text and button
+                list($new_type, $none) = $this->utils->dataChangeApptType($data, $userId, true);
+
+                if (!empty($new_type)) {
+                    $sts = 0;
+                    $lbl = !empty($settings[BackendUtils::TALK_FORM_LABEL])
+                        ? $settings[BackendUtils::TALK_FORM_LABEL]
+                        : $settings[BackendUtils::TALK_FORM_DEF_LABEL];
+                    // TRANSLATORS Ex: Would you like to change your {{meeting type}} to {{online(video/audio)}} ?
+                    $tr_params['appt_c_msg'] = $this->l->t("Would you like to change your %s to %s?", [$lbl, $new_type]);
+                    // TRANSLATORS This is a button label
+                    $tr_params['appt_action_url_text'] = $this->l->t("Yes, Change");
+//                        $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
+                }
             }
         }
+
+        if (!$alreadyVerified) {
+            // TRANSLATORS Meaning the visitor need to click a button or take some other action to finalize/save something
+            $tr_params['appt_c_head'] = $this->l->t("Action needed");
+            if ($sts === 0) {
+                // we need to encrypt time
+                $tr_params['appt_t1'] = $this->utils->encrypt(
+                    ((int)(microtime(true) * 1000)) . chr(31) . $uri,
+                    hex2bin($this->appConfig->getValueString(Application::APP_ID, 'hk'))
+                );
+                $tr_params['appt_cncf_delay'] = base64_encode($this->l->t("Please Wait"));
+            }
+        }
+
+        $res = $this->makeCncfResponse($tr_params, $sts, $userId, $settings, $embed);
+        $csp = $res->getContentSecurityPolicy();
+        if (!$csp) {
+            $csp = new \OCP\AppFramework\Http\ContentSecurityPolicy();
+        }
+        $csp->addAllowedWorkerSrcDomain('blob');
+        $res->setContentSecurityPolicy($csp);
+        return $res;
+    }
+
+
+    /**
+     * @param string $action '0'|'1'|'2'|'3'
+     * @param string $uri
+     * @param string $userId
+     * @param string $pageId
+     * @param bool $embed
+     * @return Response
+     * @throws \Exception
+     */
+    private function cncfHandleAction(
+        string $action,
+        string $uri,
+        string $userId,
+        string $pageId,
+        bool   $embed): Response
+    {
 
         $settings = $this->utils->getUserSettings();
 
@@ -369,49 +590,15 @@ class PageController extends Controller
 
         $tr_params = ['appt_c_more' => ''];
 
-        // take action automatically if "Skip email verification step" is set
-        $take_action = $a === '2';
-        $appt_action_url_hash = '';
-
-        // https://github.com/SergeyMosin/Appointments/issues/293#issuecomment-2725069371
-        if ($this->request->getMethod() === 'HEAD') {
-            // 'b' === bot
-            $a = 'b' . $a;
-        }
-
-        // issue https://github.com/SergeyMosin/Appointments/issues/293
-        if (!$take_action) {
-            // we only take action if we have $dh hash2 param
-            $hash1 = hash('adler32', $pd);
-            $dh = $this->request->getParam("h" . $hash1);
-
-            if ($dh !== null) {
-                if ($this->utils->validateHHash($dh, $pd . $hash1)) {
-                    $take_action = true;
-                } else {
-                    // something fishy is going on
-                    return new NotFoundResponse();
-                }
-            } else {
-                $appt_action_url_hash = hash('adler32', $pd, false);
-                if($settings[BackendUtils::PSN_CNCF_DELAY]===true) {
-                    $tr_params['appt_cncf_delay'] = base64_encode($this->l->t("Please Wait"));
-                }
-            }
-        }
-
-        // TODO: check if trying to deal with a past appointment.
-
-        $page_text = '';
         $sts = 1; // <- assume fail
         $a_base = false; // are we in preview mode (renderAs base)
-        if ($a === '1' || $a === '2') {
-            // Confirm or Skip email verification step ($a==='2')
-
+        if ($action === '1' // confirm
+            || $action === '2' // $action==='2' - confirm + skip email verification step
+        ) {
             $a_ok = true;
             $skip_evs_email = '';
 
-            if ($a === '2') {
+            if ($action === '2') { // skip email verification
                 $a_ok = false;
                 $sp = strpos(substr($uri, 4), chr(31));
                 if ($sp !== false) {
@@ -423,6 +610,7 @@ class PageController extends Controller
                             $uri = substr($uri, $sp + 1 + 4);
                             $skip_evs_email = $em;
                             $a_ok = true; // :)
+                            // TODO: why ???
                             $a_base = true;
                             $tr_params['appt_c_more'] = $settings[BackendUtils::PSN_FORM_FINISH_TEXT];
                         }
@@ -437,93 +625,47 @@ class PageController extends Controller
 
                 $initial_confirm = true;
 
-                if ($take_action) {
-                    // Emails are handled by the DavListener... set the Hint
-                    HintVar::setHint(HintVar::APPT_CONFIRM);
+                // Emails are handled by the DavListener... set the Hint
+                HintVar::setHint(HintVar::APPT_CONFIRM);
 
-                    list($sts, $date_time, $attendeeName, $attendeeEmail) = $this->bc->confirmAttendee($userId, $pageId, $cal_id, $uri);
+                list($sts, $date_time, $attendeeName, $attendeeEmail) = $this->bc->confirmAttendee($userId, $pageId, $cal_id, $uri);
 
-                    if ($sts === 0) {
-                        // Appointment is confirmed successfully
-                        $page_text = $this->makeConfirmedPageText($date_time, $skip_evs_email);
-                    } elseif ($otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
-                        // edge case (simple mode): this could be a page reload, and we need to check DEST calendar just in-case the appointment has been confirmed already
+                if ($sts === 0) {
+                    // Appointment is confirmed successfully
+                    $tr_params['appt_c_msg'] = $this->makeConfirmedPageText($date_time, $skip_evs_email);
+                } elseif ($otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
+                    // edge case (simple mode): this could be a page reload, and we need to check DEST calendar just in-case the appointment has been confirmed already
 
-                        //TODO: better way todo this to keep the code DRY ???
-                        if (($data = $this->bc->getObjectData($otherCalId, $uri)) !== null) {
-                            // this appointment is confirmed already
+                    //TODO: better way todo this to keep the code DRY ???
+                    if (($data = $this->bc->getObjectData($otherCalId, $uri)) !== null) {
+                        // this appointment is confirmed already
 
-                            list($date_time, $state, $attendeeName, $attendeeEmail) = $this->utils->dataApptGetInfo($data);
+                        list($date_time, $state, $attendeeName, $attendeeEmail) = $this->utils->dataApptGetInfo($data);
 
-                            if ($date_time !== null && $state === BackendUtils::PREF_STATUS_CONFIRMED) {
-                                $sts = 0;
-                                $take_action = true; // << overrides header
-                                $page_text = $this->getPageText($date_time, $state);
-
-                                $initial_confirm = false;
-                            }
-                        }
-                    }
-                } else {
-                    // user needs to click the button to take_action if not confirmed already
-
-                    $data = $this->bc->getObjectData($cal_id, $uri);
-
-                    // Confirmed appointments are in the DEST ($otherCalId) in manual mode
-                    if ($data === null && $otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
-                        // check DEST cal
-                        $data = $this->bc->getObjectData($otherCalId, $uri);
-                    }
-
-                    list($date_time, $state, $attendeeName, $attendeeEmail) = $this->utils->dataApptGetInfo($data);
-
-                    if ($date_time === null) {
-                        // error
-                        $sts = 1;
-                    } else {
-                        $sts = 0;
-                        if ($state === BackendUtils::PREF_STATUS_CONFIRMED) {
-                            // already confirmed
-                            $take_action = true; // << overrides header
-                            $page_text = $this->getPageText($date_time, $state);
+                        if ($date_time !== null && $state === BackendUtils::PREF_STATUS_CONFIRMED) {
+                            $sts = 0;
+                            $tr_params['appt_c_msg'] = $this->getPageText($date_time, $state);
 
                             $initial_confirm = false;
-                        } else {
-                            // TRANSLATORS Ex: Please confirm your appointment scheduled for {{Friday, April 24, 2020, 12:10PM EDT}}.
-                            $page_text = $this->l->t('Please confirm your appointment scheduled for %s.', [$date_time]);
-                            // TRANSLATORS This is a button label
-                            $tr_params['appt_action_url_text'] = $this->l->t("Confirm");
-                            $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
                         }
                     }
                 }
 
-                if ($take_action && $sts === 0) {
-                    // check if we have a custom redirect
-                    if (($r_url = trim($settings[BackendUtils::ORG_CONFIRMED_RDR_URL])) !== "") {
-
-                        $d = ["initialConfirm" => $initial_confirm];
-
-                        if ($settings[BackendUtils::ORG_CONFIRMED_RDR_ID] === true) {
-                            $d["id"] = hash("md5", str_replace("-", "", substr($uri, 0, -4)));
-                        }
-                        if ($settings[BackendUtils::ORG_CONFIRMED_RDR_DATA] === true) {
-                            $d["name"] = $attendeeName;
-                            $d["email"] = $attendeeEmail ?? null;
-                            $d["dateTimeString"] = $date_time;
-                        }
-
-                        $r_url .= (!str_contains($r_url, "?") ? "?" : "&") . "d=" . base64_encode(json_encode($d));
-
-                        // redirect
-                        $rr = new RedirectResponse($r_url);
-                        $rr->setStatus(303);
-                        return $rr;
+                if ($sts === 0) {
+                    $customRedirectUrl = $this->getCustomRedirectUrl(
+                        $settings,
+                        $initial_confirm,
+                        $uri,
+                        $attendeeName,
+                        $attendeeEmail,
+                        $date_time
+                    );
+                    if ($customRedirectUrl !== '') {
+                        return new RedirectResponse($customRedirectUrl);
                     }
                 }
             }
-        } elseif ($a === "0") {
-            // Cancel
+        } elseif ($action === '0') { // Cancel
 
             // The appointment can be in the destination calendar (manual mode)
             // this needs to be done here just in case we need to 'reset'
@@ -538,56 +680,37 @@ class PageController extends Controller
                 } // else the appointment is still pending in the MAIN calendar
             }
 
-            if ($take_action) {
-                // Emails are handled by the DavListener... set the Hint
-                HintVar::setHint(HintVar::APPT_CANCEL);
+            // Emails are handled by the DavListener... set the Hint
+            HintVar::setHint(HintVar::APPT_CANCEL);
 
-                // This can be 'mark' or 'reset'
-                $mr = $settings[BackendUtils::CLS_ON_CANCEL];
-                if ($mr === 'mark') {
-                    // Just Cancel
-                    list($sts, $date_time) = $this->bc->cancelAttendee($userId, $pageId, $r_cal_id, $uri);
-                } else {
+            // This can be 'mark' or 'reset'
+            $mr = $settings[BackendUtils::CLS_ON_CANCEL];
+            if ($mr === 'mark') {
+                // Just Cancel
+                list($sts, $date_time) = $this->bc->cancelAttendee($userId, $pageId, $r_cal_id, $uri);
+            } else {
 
-                    // Delete and Reset ($date_time can be an empty string here)
-                    list($sts, $date_time, $dt_info, $tz_data, $title) = $this->bc->deleteCalendarObject($userId, $r_cal_id, $uri);
+                // Delete and Reset ($date_time can be an empty string here)
+                list($sts, $date_time, $dt_info, $tz_data, $title) = $this->bc->deleteCalendarObject($userId, $r_cal_id, $uri);
 
-                    if ($settings[BackendUtils::CLS_TS_MODE] === '0') {
+                if ($settings[BackendUtils::CLS_TS_MODE] === '0') {
 
-                        if (empty($dt_info)) {
-                            $this->logger->warning('can not re-create appointment, no dt_info or this is a repeated request');
-                        } else {
-                            // this is only needed in simple/manual mode
-                            $cr = $this->addAppointments($userId, $dt_info, $tz_data, $title);
-                            if ($cr[0] !== '0') {
-                                $this->logger->error('addAppointments() failed ' . $cr);
-                            }
+                    if (empty($dt_info)) {
+                        $this->logger->warning('can not re-create appointment, no dt_info or this is a repeated request');
+                    } else {
+                        // this is only needed in simple/manual mode
+                        $cr = $this->addAppointments($userId, $dt_info, $tz_data, $title);
+                        if ($cr[0] !== '0') {
+                            $this->logger->error('addAppointments() failed ' . $cr);
                         }
                     }
                 }
-
-                if ($sts === 0) { // Appointment is cancelled successfully
-                    $page_text = $this->getPageText($date_time, BackendUtils::PREF_STATUS_CANCELLED);
-                }
-            } else {
-                // user needs to click the button to take_action if not canceled already
-                list($date_time, $state) = $this->utils->dataApptGetInfo(
-                    $this->bc->getObjectData($r_cal_id, $uri));
-                $sts = 0;
-                if ($date_time === null || $state === BackendUtils::PREF_STATUS_CANCELLED) {
-                    // already canceled
-                    $take_action = true; // << overrides header
-                    $page_text = $this->getPageText($date_time || '', BackendUtils::PREF_STATUS_CANCELLED);
-                } else {
-                    // TRANSLATORS Ex: Would you like to cancel appointment scheduled for {{Friday, April 24, 2020, 12:10PM EDT}} ?
-                    $page_text = $this->l->t('Would you like to cancel appointment scheduled for %s ?', [$date_time]);
-                    // TRANSLATORS This is a button label
-                    $tr_params['appt_action_url_text'] = $this->l->t("Yes, Cancel");
-                    $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
-                }
             }
-        } elseif ($a === '3') {
-            // Appointment type change (Talk integration)
+
+            if ($sts === 0) { // Appointment is canceled successfully
+                $tr_params['appt_c_msg'] = $this->getPageText($date_time, BackendUtils::PREF_STATUS_CANCELLED);
+            }
+        } elseif ($action === '3') { // Appointment type change (Talk integration)
 
             // Set hint for dav listener
             HintVar::setHint(HintVar::APPT_TYPE_CHANGE);
@@ -606,120 +729,110 @@ class PageController extends Controller
             }
 
             if ($data !== null) {
+                list($new_type, $new_data) = $this->utils->dataChangeApptType($data, $userId);
+                if (!empty($new_type) && !empty($new_data)) {
 
-                if ($take_action) {
-
-                    list($new_type, $new_data) = $this->utils->dataChangeApptType($data, $userId);
-                    if (!empty($new_type) && !empty($new_data)) {
-
-                        if ($this->bc->updateObject($cId, $uri, $new_data) !== false) {
-                            $sts = 0;
-
-                            $lbl = !empty($settings[BackendUtils::TALK_FORM_LABEL])
-                                ? $settings[BackendUtils::TALK_FORM_LABEL]
-                                : $settings[BackendUtils::TALK_FORM_DEF_LABEL];
-
-                            // TRANSLATORS Ex: Your {{meeting type}} has been changed to {{online(video/audio)}}
-                            $page_text = $this->l->t("Your %s has been changed to %s", [$lbl, $new_type]);
-                        }
-                    }
-                } else {
-                    // show the "Would you like to change..." text and button
-                    list($new_type, $none) = $this->utils->dataChangeApptType($data, $userId, true);
-
-                    if (empty($new_type)) {
-                        // error
-                        $sts = 1;
-                    } else {
-
+                    if ($this->bc->updateObject($cId, $uri, $new_data) !== false) {
                         $sts = 0;
 
                         $lbl = !empty($settings[BackendUtils::TALK_FORM_LABEL])
                             ? $settings[BackendUtils::TALK_FORM_LABEL]
                             : $settings[BackendUtils::TALK_FORM_DEF_LABEL];
 
-                        // TRANSLATORS Ex: Would you like to change your {{meeting type}} to {{online(video/audio)}} ?
-                        $page_text = $this->l->t("Would you like to change your %s to %s?", [$lbl, $new_type]);
-                        // TRANSLATORS This is a button label
-                        $tr_params['appt_action_url_text'] = $this->l->t("Yes, Change");
-                        $tr_params['appt_action_url_hash'] = $appt_action_url_hash;
+                        // TRANSLATORS Ex: Your {{meeting type}} has been changed to {{online(video/audio)}}
+                        $tr_params['appt_c_msg'] = $this->l->t("Your %s has been changed to %s", [$lbl, $new_type]);
                     }
                 }
             }
-        } elseif ($a[0] === 'b') {
-            // bot
-            $this->logger->warning('bot detected on cncf page, remote address: ' . $this->request->getRemoteAddress());
-
-            // display a dummy confirm page just incase
-            $sts = 0;
-            $date_time = $this->utils->getDateTimeString(
-                new \DateTimeImmutable('now'),
-                '_UTC'
-            );
-            $page_text = $this->makeConfirmedPageText($date_time, '');
-            $tr_params['appt_c_more'] = $settings[BackendUtils::PSN_FORM_FINISH_TEXT];
-        } elseif ($a[0] === '-') {
-            // testing
-            $sts = 0;
-            // -2
-            $take_action = true;
-            $date_time = $this->utils->getDateTimeString(
-                new \DateTimeImmutable('now'),
-                '_UTC'
-            );
-            $page_text = $this->makeConfirmedPageText($date_time, 'test.email@domain.com');
-            $tr_params['appt_c_more'] = $settings[BackendUtils::PSN_FORM_FINISH_TEXT];
         }
+
+        return $this->makeCncfResponse($tr_params, $sts, $userId, $settings,
+//            // renderAs=base (embedded or preview when email validation step is skipped
+            $a_base === true || $embed === true);
+    }
+
+    private function makeCncfResponse(
+        array  $params,
+        int    $sts,
+        string $userId,
+        array  $settings,
+        bool   $renderAsBase
+    ): Response {
 
         if ($sts === 0) {
             // Confirm/Cancel OK.
             $tr_name = "public/thanks";
-
-            if ($take_action) {
-                // TRANSLATORS Meaning the booking process is finished
-                $tr_params['appt_c_head'] = $this->l->t("All done.");
-            } else {
-                // TRANSLATORS Meaning the visitor need to click a button or take some other action to finalize/save something
-                $tr_params['appt_c_head'] = $this->l->t("Action needed");
-            }
-            $tr_params['appt_c_msg'] = $page_text;
             $tr_sts = 200;
+            if (!isset($params['appt_c_head'])) {
+                // TRANSLATORS Meaning the booking process is finished
+                $params['appt_c_head'] = $this->l->t("All done.");
+            }
         } else {
             // Error
             // TODO: add phone number to "contact us ..."
             $org_email = $settings[BackendUtils::ORG_EMAIL];
-
             if ($sts !== 2) {
                 // general error
                 $tr_name = "public/formerr";
-                $tr_params['appt_e_ne'] = $org_email;
+                $params['appt_e_ne'] = $org_email;
                 $tr_sts = 500;
             } else {
                 // link expired
                 $tr_name = "public/thanks";
-                $tr_params['appt_c_head'] = $this->l->t("Info");
-                $tr_params['appt_c_msg'] = $this->l->t("Link Expired …");
+                $params['appt_c_head'] = $this->l->t("Info");
+                $params['appt_c_msg'] = $this->l->t("Link Expired …");
                 $tr_sts = 409;
             }
         }
 
-        if ($a_base === true || $embed === true) {
+        $params['appt_inline_style'] = $this->utils->getInlineStyle($userId, $settings);
+
+        if ($renderAsBase) {
             // renderAs=base (embedded or preview when email validation step is skipped
-            $tr = new TemplateResponse($this->appName, $tr_name, [], "base");
+            $tr = new TemplateResponse(Application::APP_ID, $tr_name, [], "base");
         } else {
             // renderAs=public
             $tr = $this->getPublicTemplate($tr_name);
         }
 
-        $tr_params['appt_inline_style'] = $this->utils->getInlineStyle($userId, $settings);
-        $tr_params['application'] = $this->l->t('Appointments');
+        $params['application'] = $this->l->t('Appointments');
 
-        $tr->setParams($tr_params);
+        $tr->setParams($params);
         $tr->setStatus($tr_sts);
 
         $tr->addHeader('X-Robots-Tag', 'noindex, nofollow');
 
+        if ($this->request->getCookie('appt_cncf_t1')) {
+            $tr->invalidateCookie('appt_cncf_t1');
+        }
+
         return $tr;
+    }
+
+    private function getCustomRedirectUrl(
+        array  $settings,
+        bool   $isInitial,
+        string $uri,
+        string $attendeeName,
+        string $attendeeEmail,
+        string $dateTime
+    ): string {
+        // check if we have a custom redirect
+        if (($r_url = trim($settings[BackendUtils::ORG_CONFIRMED_RDR_URL])) !== "") {
+            $d = ["initialConfirm" => $isInitial];
+            if ($settings[BackendUtils::ORG_CONFIRMED_RDR_ID] === true) {
+                $d["id"] = hash("md5", str_replace("-", "", substr($uri, 0, -4)));
+            }
+            if ($settings[BackendUtils::ORG_CONFIRMED_RDR_DATA] === true) {
+                $d["name"] = $attendeeName;
+                $d["email"] = $attendeeEmail ?? null;
+                $d["dateTimeString"] = $dateTime;
+            }
+
+            return $r_url . (!str_contains($r_url, "?") ? "?" : "&") . "d=" . base64_encode(json_encode($d));
+        } else {
+            return '';
+        }
     }
 
     private function makeConfirmedPageText(string $date_time, string $skip_evs_email): string
@@ -736,7 +849,7 @@ class PageController extends Controller
     {
         $tn = 'public/formerr';
         if ($embed) {
-            $tr = new TemplateResponse($this->appName, $tn, [], 'base');
+            $tr = new TemplateResponse(Application::APP_ID, $tn, [], 'base');
         } else {
             $tr = $this->getPublicTemplate($tn);
         }
@@ -804,11 +917,9 @@ class PageController extends Controller
         $captcha_server_error_url = "form?sts=4" . $pageParam;
         $blocked_error_url = "form?sts=5" . $pageParam;
 
-        $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
+        $key = hex2bin($this->appConfig->getValueString(Application::APP_ID, 'hk'));
         if (empty($key)) {
-            $rr = new RedirectResponse($server_err_url);
-            $rr->setStatus(303);
-            return $rr;
+            return new RedirectResponse($server_err_url);
         }
 
         $settings = $this->utils->getUserSettings();
@@ -842,9 +953,7 @@ class PageController extends Controller
             || !isset($post['tzi']) || strlen($post['tzi']) > 64
             || preg_match('/^[UFT][^\pC ]*$/u', $post['tzi']) !== 1) {
 
-            $rr = new RedirectResponse($bad_input_url);
-            $rr->setStatus(303);
-            return $rr;
+            return new RedirectResponse($bad_input_url);
         }
 
         if (!empty($settings[BackendUtils::SEC_EMAIL_BLACKLIST]) && is_array($settings[BackendUtils::SEC_EMAIL_BLACKLIST])) {
@@ -855,10 +964,7 @@ class PageController extends Controller
                     (str_starts_with($blocked, '*@')
                         && str_ends_with($_email, substr($blocked, 1)))
                 ) {
-                    $rr = new RedirectResponse($blocked_error_url);
-                    $rr->setStatus(303);
-                    return $rr;
-
+                    return new RedirectResponse($blocked_error_url);
                 }
             }
         }
@@ -884,18 +990,14 @@ class PageController extends Controller
                 foreach ($f0 as $index => $field) {
                     $fieldResult = $this->showFormCustomField($field, $post, $index);
                     if ($fieldResult === false) {
-                        $rr = new RedirectResponse($bad_input_url);
-                        $rr->setStatus(303);
-                        return $rr;
+                        return new RedirectResponse($bad_input_url);
                     }
                     $v .= $fieldResult;
                 }
             } else {
                 $fieldResult = $this->showFormCustomField($f0, $post);
                 if ($fieldResult === false) {
-                    $rr = new RedirectResponse($bad_input_url);
-                    $rr->setStatus(303);
-                    return $rr;
+                    return new RedirectResponse($bad_input_url);
                 }
                 $v = $fieldResult;
             }
@@ -907,13 +1009,9 @@ class PageController extends Controller
             && !empty($settings[BackendUtils::SEC_HCAP_SITE_KEY])
         ) {
             if (($cErr = $this->validateHCaptcha($post, $settings)) !== 0) {
-                if ($cErr === 1) {
-                    $rr = new RedirectResponse($captcha_failed_url);
-                } else {
-                    $rr = new RedirectResponse($captcha_server_error_url);
-                }
-                $rr->setStatus(303);
-                return $rr;
+                return new RedirectResponse($cErr === 1
+                    ? $captcha_failed_url
+                    : $captcha_server_error_url);
             }
         }
 
@@ -921,17 +1019,13 @@ class PageController extends Controller
 
         $cal_id = $this->utils->getMainCalId($userId, $this->bc);
         if ($cal_id === "-1") {
-            $rr = new RedirectResponse($server_err_url);
-            $rr->setStatus(303);
-            return $rr;
+            return new RedirectResponse($server_err_url);
         }
         // main cal_id is good...
 
         $dc = $this->utils->decrypt($post['adatetime'], $key);
         if (empty($dc) || (!str_contains($dc, '|') && $dc[0] !== "_")) {
-            $rr = new RedirectResponse($bad_input_url);
-            $rr->setStatus(303);
-            return $rr;
+            return new RedirectResponse($bad_input_url);
         }
 
         $dcs = substr($dc, 0, 2);
@@ -990,9 +1084,7 @@ class PageController extends Controller
 
         if ($ts < $ti || $ts > $ti + 900
             || strlen($evt_uri) > 64) {
-            $rr = new RedirectResponse($bad_input_url);
-            $rr->setStatus(303);
-            return $rr;
+            return new RedirectResponse($bad_input_url);
         }
 
         $skip_evs = $settings[BackendUtils::EML_SKIP_EVS];
@@ -1012,9 +1104,7 @@ class PageController extends Controller
             $this->logger->error("setAttendee error status: " . $r);
 
             // &r=1 means there was a race and someone else has booked that slot
-            $rr = new RedirectResponse($server_err_url . ($r === 1 ? "&r=1" : "") . "&eml=1");
-            $rr->setStatus(303);
-            return $rr;
+            return new RedirectResponse($server_err_url . ($r === 1 ? "&r=1" : "") . "&eml=1");
         }
 
         if ($skip_evs === false) {
@@ -1033,9 +1123,7 @@ class PageController extends Controller
                 );
         }
 
-        $rr = new RedirectResponse($uri);
-        $rr->setStatus(303);
-        return $rr;
+        return new RedirectResponse($uri);
     }
 
     private function showFormCustomField(array $field, array $post, int $index = 0): bool|string
@@ -1173,7 +1261,7 @@ class PageController extends Controller
             if ($dParam === self::TEST_TOKEN_CNF) {
                 $dd = pack('L', time()) . 'test.email@domain.com';
             } else {
-                $key = hex2bin($this->c->getAppValue($this->appName, 'hk'));
+                $key = hex2bin($this->appConfig->getValueString(Application::APP_ID, 'hk'));
                 $dd = $this->utils->decrypt($dParam, $key);
             }
             if (strlen($dd) > 7) {
@@ -1205,7 +1293,7 @@ class PageController extends Controller
         if ($render === "public") {
             $tr = $this->getPublicTemplate($tmpl);
         } else {
-            $tr = new TemplateResponse($this->appName, $tmpl, [], $render);
+            $tr = new TemplateResponse(Application::APP_ID, $tmpl, [], $render);
         }
 
         $param['appt_inline_style'] = $this->utils->getInlineStyle($uid, $settings);
@@ -1222,7 +1310,7 @@ class PageController extends Controller
         if ($render === "public") {
             $tr = $this->getPublicTemplate($templateName);
         } else {
-            $tr = new TemplateResponse($this->appName, $templateName, [], $render);
+            $tr = new TemplateResponse(Application::APP_ID, $templateName, [], $render);
         }
 
         $settings = $this->utils->getUserSettings();
@@ -1306,7 +1394,7 @@ class PageController extends Controller
 
         $params['appt_state'] = '1';
 
-        $hkey = $this->c->getAppValue($this->appName, 'hk');
+        $hkey = $this->appConfig->getValueString(Application::APP_ID, 'hk');
         if (empty($hkey)) {
             $tr->setParams($params);
             return $tr;
@@ -1370,7 +1458,8 @@ class PageController extends Controller
 
         if ($settings[BackendUtils::TALK_ENABLED] === true) {
             if ($settings[BackendUtils::TALK_FORM_ENABLED] === true
-                && !empty($this->c->getUserValue($uid, $this->appName, chr(99) . "n" . 'k'))
+                && !empty($this->userConfig->getValueString(
+                    $uid, Application::APP_ID, chr(99) . "n" . 'k'))
             ) {
                 $video_label = !empty($settings[BackendUtils::TALK_FORM_LABEL])
                     ? $settings[BackendUtils::TALK_FORM_LABEL]
@@ -1570,7 +1659,7 @@ class PageController extends Controller
     private function getPublicTemplate(string $templateName): PublicTemplateResponse
     {
         $settings = $this->utils->getUserSettings();
-        $tr = new PublicTemplateResponse($this->appName, $templateName, []);
+        $tr = new PublicTemplateResponse(Application::APP_ID, $templateName, []);
         if (!empty($settings[BackendUtils::PSN_PAGE_TITLE])) {
             $tr->setHeaderTitle($settings[BackendUtils::PSN_PAGE_TITLE]);
         } else {

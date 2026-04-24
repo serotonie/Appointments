@@ -143,6 +143,7 @@ class BackendUtils
     public const PSN_NWEEKS = "nbrWeeks";
     public const PSN_TIME2 = "time2Cols";
     public const PSN_HIDE_TEL = "hidePhone";
+    // TODO: PSN_CNCF_DELAY is depreicated
     public const PSN_CNCF_DELAY = "cncfDelay";
     public const PSN_END_TIME = "endTime";
     public const PSN_SHOW_TZ = "showTZ";
@@ -211,6 +212,7 @@ class BackendUtils
     public const DEBUGGING_NONE = 0;
     public const DEBUGGING_LOG_REM_BLOCKER = 1;
     public const DEBUGGING_LOG_TEMPLATE_DUR = 2;
+    public const DEBUGGING_CANCELLATIONS = 3;
 
     public const DIR_ITEMS = "dirItems";
 
@@ -1449,7 +1451,8 @@ class BackendUtils
                     'id' => $pageId,
                     'type' => 'page',
                     self::PAGE_ENABLED => $isEnabled,
-                    self::PAGES_LABEL => ($data[self::PAGE_LABEL] ?? '')
+                    self::PAGES_LABEL => ($data[self::PAGE_LABEL] ?? ''),
+                    self::CLS_TS_MODE => ($data[self::CLS_TS_MODE] ?? self::CLS_TS_MODE_TEMPLATE),
                 ];
             } elseif ($includeDirPages) {
                 $pages[] = [
