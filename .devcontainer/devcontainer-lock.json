@@ -1,0 +1,9 @@
+{
+  "features": {
+    "ghcr.io/devcontainers-contrib/features/node-asdf:0": {
+      "version": "0.0.2",
+      "resolved": "ghcr.io/devcontainers-extra/features/node-asdf@sha256:413daa93c0bb7ae76a924f51283a65eca3af3a141984f42fe798b3fe445ece71",
+      "integrity": "sha256:413daa93c0bb7ae76a924f51283a65eca3af3a141984f42fe798b3fe445ece71"
+    }
+  }
+}
