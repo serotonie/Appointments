@@ -865,7 +865,7 @@ class PageController extends Controller
 
     /**
      * @NoAdminRequired
-     * #[OCP\\AppFramework\\Http\\Attribute\\NoCSRFRequired] 
+     * @NoCSRFRequired
      * @noinspection PhpUnused
      */
     public function formBase(): Response
