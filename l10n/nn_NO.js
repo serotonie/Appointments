@@ -3,8 +3,10 @@ OC.L10N.register(
     {
     "Cancel" : "Avbryt",
     "Info" : "Info",
+    "Preview" : "Førehandsvisning",
     "Settings" : "Instillingar",
     "Title" : "Tittel",
+    "Text" : "Tekst",
     "URL" : "URL",
     "Save" : "Lagre",
     "Copy" : "Kopier",
@@ -12,6 +14,7 @@ OC.L10N.register(
     "Add" : "Legg til",
     "OK" : "OK",
     "Delete" : "Ta bort",
+    "After" : "Etter",
     "Start" : "Start",
     "Location" : "Stad",
     "Phone" : "Telefonnummer",

@@ -1,8 +1,10 @@
 { "translations": {
     "Cancel" : "Avbryt",
     "Info" : "Info",
+    "Preview" : "Førehandsvisning",
     "Settings" : "Instillingar",
     "Title" : "Tittel",
+    "Text" : "Tekst",
     "URL" : "URL",
     "Save" : "Lagre",
     "Copy" : "Kopier",
@@ -10,6 +12,7 @@
     "Add" : "Legg til",
     "OK" : "OK",
     "Delete" : "Ta bort",
+    "After" : "Etter",
     "Start" : "Start",
     "Location" : "Stad",
     "Phone" : "Telefonnummer",

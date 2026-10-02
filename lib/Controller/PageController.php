@@ -1031,15 +1031,17 @@ class PageController extends Controller
         $dcs = substr($dc, 0, 2);
         if ($dcs === "_2") {
             // template mode
-            // $dc = '_2'.ses_time.'_'.$day(1byte)$indexInDay'_'startTs
-            $pos = strpos($dc, '_', 2);
-            $ti = intval(substr($dc, 2, $pos - 2));
-            $pos++;
-            $post['tmpl_day'] = intval(substr($dc, $pos, 1));
-            $pos2 = strpos($dc, '_', $pos);
-            $pos++;
-            $post['tmpl_idx'] = intval(substr($dc, $pos, $pos2 - $pos));
-            $post['tmpl_start_ts'] = intval(substr($dc, $pos2 + 1));
+            // $dc = '_2'.ses_time. $sep. $token . $sep . $s_ts . $sep . $e_ts . $sep . $title;
+            $dcParts = explode("\x1f", substr($dc, 2), 5);
+            if (count($dcParts) !== 5) {
+                return new RedirectResponse($bad_input_url);
+            }
+
+            $ti = intval($dcParts[0]);
+            $post['tmpl_token'] = $dcParts[1];
+            $post['tmpl_start_ts'] = $dcParts[2];
+            $post['tmpl_end_ts'] = $dcParts[3];
+            $post['tmpl_title'] = $dcParts[4] ?: $this->l->t('Appointment');
 
             // make new uri, it is needed for email, buttons, etc...
             $o = strtoupper(hash("tiger128,4", $dc . "appointments app - srgdev.com" . $userId . rand() . $cal_id . $pageId));
@@ -1442,8 +1444,8 @@ class PageController extends Controller
             BackendUtils::PSN_FNED . ":" . ($settings[BackendUtils::PSN_FNED] ? "1" : "0") . '.' .
             BackendUtils::PSN_WEEKEND . ":" . ($settings[BackendUtils::PSN_WEEKEND] ? "1" : "0") . '.' .
             BackendUtils::PSN_SHOW_TZ . ":" . ($settings[BackendUtils::PSN_SHOW_TZ] ? "1" : "0") . '.' .
-            BackendUtils::PSN_TIME2 . ":" . ($settings[BackendUtils::PSN_TIME2] ? "1" : "0") . '.' .
-            BackendUtils::PSN_END_TIME . ":" . ($settings[BackendUtils::PSN_END_TIME] ? "1" : "0") . '.' .
+            BackendUtils::PSN_TIME2 . ":0" . '.' .
+            BackendUtils::PSN_END_TIME . ":1" . '.' .
             BackendUtils::PSN_PREFILL_INPUTS . ":" . $settings[BackendUtils::PSN_PREFILL_INPUTS] . '.' .
             BackendUtils::PSN_PREFILLED_TYPE . ":" . $settings[BackendUtils::PSN_PREFILLED_TYPE];
 
