@@ -1,3 +1,18 @@
+## v2.8.3 - 2026-10-05
+### Fixed
+- fix: regression from 'Show end time' option removal (ensure backend sends the 'end time' in External Mode) - #695
+### Added
+- show 'template_data_sorted' status in the settings dump
+
+## v2.8.2 - 2026-10-02
+### Changed
+- bump dependencies
+
+## v2.8.1 - 2026-10-02
+### Fixed
+- fix regression from v2.8.0 update (template migration not triggered) - #693
+- fix(settings): crash when closing the Directory Page settings dialog
+
 ## v2.8.0 - 2026-10-01
 ### Added
 - Add support for Nextcloud 35 - #690
