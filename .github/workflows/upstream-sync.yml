@@ -51,8 +51,17 @@ jobs:
           fi
           BRANCH="upstream-sync/$TAG"
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            echo "Branch $BRANCH already exists (PR pending)."
-            echo "result=skip" >> "$GITHUB_OUTPUT"; exit 0
+            echo "Branch $BRANCH already exists."
+            OPEN_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" \
+              --base "${GITHUB_REF_NAME}" --state open --json number --jq '.[0].number')
+            if [ -z "$OPEN_PR" ]; then
+              gh pr create --base "${GITHUB_REF_NAME}" --head "$BRANCH" \
+                --title "Merge upstream $TAG" \
+                --body "Merging upstream \`$TAG\` produced conflicts. Resolve the conflict markers on this branch, then merge. Merging this PR builds the app and creates release \`$TAG\`."
+            else
+              echo "Pull request #$OPEN_PR is already open."
+            fi
+            echo "result=conflict" >> "$GITHUB_OUTPUT"; exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
