@@ -1,0 +1,73 @@
+name: Build and Release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: SergeyMosin/Appointments
+
+jobs:
+  release:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'upstream-sync/'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          TAG="${INPUT_TAG:-${HEAD_REF#upstream-sync/}}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: make dev-setup
+
+      - name: Build frontend and app package
+        run: make appstore
+
+      - name: Commit build, push and tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A js css
+          git diff --cached --quiet || git commit -m "Build frontend assets for $TAG"
+          git push origin HEAD
+          git tag -f "$TAG"
+          git push -f origin "refs/tags/$TAG"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release create "$TAG" build/artifacts/appstore/*.tar.gz \
+            --title "$TAG" \
+            --notes "Fork build of upstream release $TAG (https://github.com/$UPSTREAM_REPO/releases/tag/$TAG)."

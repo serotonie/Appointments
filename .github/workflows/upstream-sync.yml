@@ -1,0 +1,79 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to merge (default: latest upstream release)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: SergeyMosin/Appointments
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      result: ${{ steps.merge.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine upstream tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api "repos/$UPSTREAM_REPO/releases/latest" --jq .tag_name)
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream tag
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            echo "result=skip" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          BRANCH="upstream-sync/$TAG"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists (PR pending)."
+            echo "result=skip" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch upstream tag "$TAG" --no-tags
+          if git merge --no-edit "$TAG"; then
+            git push origin HEAD
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            git add -A
+            git commit -m "Merge upstream $TAG (conflicts to resolve)"
+            git push origin "HEAD:refs/heads/$BRANCH"
+            gh pr create --base "${GITHUB_REF_NAME}" --head "$BRANCH" \
+              --title "Merge upstream $TAG" \
+              --body "Merging upstream \`$TAG\` produced conflicts. Resolve the conflict markers on this branch, then merge. Merging this PR builds the app and creates release \`$TAG\`."
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: sync
+    if: needs.sync.outputs.result == 'clean'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.sync.outputs.tag }}
