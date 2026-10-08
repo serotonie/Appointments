@@ -1382,7 +1382,7 @@ class BackendUtils
         $isParseOK = $this->parseSettings($row, $isDir);
 
         // TODO: this can eventually be removed
-        if ($isParseOK && $this->settings[self::KEY_TMPL_DATA_SORTED] === false) {
+        if ($isParseOK && !$isDir && $this->settings[self::KEY_TMPL_DATA_SORTED] === false) {
             $this->migrateTemplate($userId, $pageId);
         }
 
@@ -2110,7 +2110,9 @@ class BackendUtils
         }
 
         // TODO: this can eventually be removed
-        if ($this->settings[self::KEY_TMPL_DATA_SORTED] === false) {
+        if (!$this->isDir($pageId) &&
+            $this->settings[self::KEY_TMPL_DATA_SORTED] === false
+        ) {
             $this->migrateTemplate($userId, $pageId);
         }
 
