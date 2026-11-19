@@ -148,6 +148,11 @@ class PageController extends Controller
 
         $this->throwIfPrivateModeNotLoggedIn();
 
+        $str = $this->checkAndDisableSimpleMode($userId, 'base');
+        if ($str !== null) {
+            return $str;
+        }
+
         if ($this->request->getParam("sts") !== null) {
             $tr = $this->showFinish('base', $userId);
         } else {
@@ -169,7 +174,7 @@ class PageController extends Controller
     public function formPostEmb(): RedirectResponse
     {
         list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
-        if ($userId === null) {
+        if ($userId === null || $this->utils->getUserSettings()[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
             $tr = new TemplateResponse(Application::APP_ID, "public/r404", [], "base");
             $tr->setStatus(404);
         }
@@ -236,6 +241,11 @@ class PageController extends Controller
 
         $this->throwIfPrivateModeNotLoggedIn();
 
+        $str = $this->checkAndDisableSimpleMode($userId, 'public');
+        if ($str !== null) {
+            return $str;
+        }
+
         if ($this->request->getParam("sts") !== null) {
             $tr = $this->showFinish('public', $userId);
         } else {
@@ -264,7 +274,7 @@ class PageController extends Controller
     public function formPost(): Response
     {
         list($userId, $pageId) = $this->utils->verifyToken($this->request->getParam("token"));
-        if ($userId === null) {
+        if ($userId === null || $this->utils->getUserSettings()[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
             return new NotFoundResponse();
         }
 
@@ -332,6 +342,11 @@ class PageController extends Controller
 
         $this->throwIfPrivateModeNotLoggedIn();
 
+        $str = $this->checkAndDisableSimpleMode($userId, 'public');
+        if ($str !== null) {
+            return $str;
+        }
+
         $dParam = substr($pd, 1);
 
         $key = hex2bin($this->appConfig->getValueString(Application::APP_ID, 'hk'));
@@ -355,7 +370,7 @@ class PageController extends Controller
                 $responseType = $a === '2'
                     ? 'f' // go to final step automatically if "Skip email verification step" is set
                     : 'v'; // verify that not a bot
-            } elseif (is_string($tkn) && strlen($tkn) < 192 && strlen($tkn) > 32) {
+            } elseif (is_string($tkn) && strlen($tkn) < 384 && strlen($tkn) > 32) {
                 $tknDecrypted = $this->utils->decrypt($tkn, $key);
                 if (!empty($tknDecrypted)) {
                     $tknData = $this->decodeTkn($tknDecrypted, $uri);
@@ -378,7 +393,7 @@ class PageController extends Controller
         } elseif ($method === 'POST') {
             if ($this->request->getParam('tos') === null) {
                 $tkn = $this->request->getParam('t1');
-                if (is_string($tkn) && strlen($tkn) < 192 && strlen($tkn) > 32) {
+                if (is_string($tkn) && strlen($tkn) < 384 && strlen($tkn) > 32) {
                     // this an anti-bot request
                     $tknDecrypted = $this->utils->decrypt($tkn, $key);
                     $tknData = $this->decodeTkn($tknDecrypted, $uri);
@@ -633,25 +648,7 @@ class PageController extends Controller
                 if ($sts === 0) {
                     // Appointment is confirmed successfully
                     $tr_params['appt_c_msg'] = $this->makeConfirmedPageText($date_time, $skip_evs_email);
-                } elseif ($otherCalId !== '-1' && $settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
-                    // edge case (simple mode): this could be a page reload, and we need to check DEST calendar just in-case the appointment has been confirmed already
 
-                    //TODO: better way todo this to keep the code DRY ???
-                    if (($data = $this->bc->getObjectData($otherCalId, $uri)) !== null) {
-                        // this appointment is confirmed already
-
-                        list($date_time, $state, $attendeeName, $attendeeEmail) = $this->utils->dataApptGetInfo($data);
-
-                        if ($date_time !== null && $state === BackendUtils::PREF_STATUS_CONFIRMED) {
-                            $sts = 0;
-                            $tr_params['appt_c_msg'] = $this->getPageText($date_time, $state);
-
-                            $initial_confirm = false;
-                        }
-                    }
-                }
-
-                if ($sts === 0) {
                     $customRedirectUrl = $this->getCustomRedirectUrl(
                         $settings,
                         $initial_confirm,
@@ -667,18 +664,7 @@ class PageController extends Controller
             }
         } elseif ($action === '0') { // Cancel
 
-            // The appointment can be in the destination calendar (manual mode)
-            // this needs to be done here just in case we need to 'reset'
             $r_cal_id = $cal_id;
-            if ($settings[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE
-                && $otherCalId !== "-1") {
-                // !! Pending appointments are in the MAIN calendar
-                // !! Confirmed appointments are in the DEST ($otherCalId)
-                if ($this->bc->getObjectData($otherCalId, $uri) !== null) {
-                    // The appointment has previously been confirmed and moved to the DEST calendar
-                    $r_cal_id = $otherCalId;
-                } // else the appointment is still pending in the MAIN calendar
-            }
 
             // Emails are handled by the DavListener... set the Hint
             HintVar::setHint(HintVar::APPT_CANCEL);
@@ -878,6 +864,11 @@ class PageController extends Controller
             return new NotFoundResponse();
         }
 
+        $str = $this->checkAndDisableSimpleMode($this->userId, 'base');
+        if ($str !== null) {
+            return $str;
+        }
+
         if ($this->request->getParam("sts") !== null) {
             $tr = $this->showFinish('base', $this->userId);
         } else {
@@ -897,7 +888,8 @@ class PageController extends Controller
         if (empty($pageId)) {
             $pageId = 'p0';
         }
-        if (empty($this->userId) || !$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)) {
+        if (empty($this->userId) || !$this->utils->loadSettingsForUserAndPage($this->userId, $pageId)
+            || $this->utils->getUserSettings()[BackendUtils::CLS_TS_MODE] === BackendUtils::CLS_TS_MODE_SIMPLE) {
             return new NotFoundResponse();
         }
 
@@ -1050,7 +1042,7 @@ class PageController extends Controller
             $post['tmpl_start_ts'] = $dcParts[2];
             $post['tmpl_end_ts'] = $dcParts[3];
 
-            if ($post['title'] &&
+            if (!empty($post['title']) &&
                 substr(hash('sha256', $dcParts[1] . $post['title'], true), 0, 24) === $dcParts[4]
             ) {
                 $post['tmpl_title'] = str_replace(["\r", "\n"], '', $post['title']);
@@ -1131,7 +1123,10 @@ class PageController extends Controller
                     $this->utils->encrypt(pack('L', time()) . $post['email'], $key)
                 );
         } else {
-            $raw_url = $this->utils->getPublicWebBase() . '/' . $this->utils->pubPrx($this->utils->getToken($userId, $pageId), $embed) . 'cncf?d=';
+            // relative, like $ok_uri: the page may be served on another host than
+            // overwritehost (a proxied domain), and a cross-origin redirect after the
+            // POST is blocked by the page CSP (form-action 'self')
+            $raw_url = 'cncf?d=';
             $raw_btkn = substr($evt_uri, 0, -4);
 
             $uri = $raw_url . "2" . urlencode(
@@ -1438,14 +1433,14 @@ class PageController extends Controller
         $t_end->setTime(0, 0);
 
         if ($ts_mode === BackendUtils::CLS_TS_MODE_EXTERNAL) {
-            // @see BCSabreImpl->queryRange()
+            // @see BCSabreImpl->queryExternal()
             $calId .= chr(31) . $settings[BackendUtils::CLS_XTM_SRC_ID];
         }
 
         if ($ts_mode === BackendUtils::CLS_TS_MODE_TEMPLATE) {
             $out = $this->bc->queryTemplate($settings, $t_start, $t_end, $uid, $pageId);
         } else {
-            $out = $this->bc->queryRange($calId, $t_start, $t_end, $ts_mode . $uid, $pageId);
+            $out = $this->bc->queryExternal($calId, $t_start, $t_end, $ts_mode . $uid, $pageId);
         }
 
         if (empty($out)) {
@@ -1766,4 +1761,30 @@ class PageController extends Controller
         }
         return 1;
     }
+
+
+    function checkAndDisableSimpleMode(string $userId, string $renderAs): Response|null
+    {
+
+        $settings = $this->utils->getUserSettings();
+
+        if ($settings[BackendUtils::CLS_TS_MODE] !== BackendUtils::CLS_TS_MODE_SIMPLE) {
+            return null;
+        }
+
+        $params['appt_inline_style'] = $this->utils->getInlineStyle($userId, $settings);
+        $params['appt_email'] = $settings[BackendUtils::ORG_EMAIL];
+        $params['appt_phone'] = $settings[BackendUtils::ORG_PHONE] ?? '';
+
+        $templateName = 'public/deprecated';
+        if ($renderAs === "public") {
+            $tr = $this->getPublicTemplate($templateName);
+        } else {
+            $tr = new TemplateResponse(Application::APP_ID, $templateName, [], $renderAs);
+        }
+        $tr->setParams($params);
+
+        return $tr;
+    }
+
 }
